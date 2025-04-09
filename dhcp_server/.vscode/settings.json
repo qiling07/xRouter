@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "dhcp_packet.h": "c",
+        "type_traits": "c",
+        "cmath": "c",
+        "time.h": "c",
+        "string.h": "c",
+        "inet.h": "c"
+    }
+}
