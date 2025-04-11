@@ -280,23 +280,27 @@ int main(int argc, char *argv[]) {
 
         /* -------- internal → external -------- */
         if (FD_ISSET(raw_int, &rd)) {
+            /** filter out IP packets of interest :
+             * IPv4 packets with correct checksum (TODO)
+             * from a private source address on the LAN (TODO)
+             * to a public destination address (TODO)
+             * with a TCP/UDP/ICMP header (TODO)
+            */
             ssize_t n = recv(raw_int, buf, BUF_SZ, 0);
-            if (n <= 0) {
-                continue;
-            }
-            struct ether_header *eth = (void *)buf;
-            if (ntohs(eth->ether_type) != ETHERTYPE_IP) {
-                continue;
-            }
-            struct ip *ip = (void *)(buf + sizeof(*eth));
-            if (ip->ip_src.s_addr == int_if_ip) {
-                continue;
-            }
+            if (n <= 0) continue;
+
+            struct ether_header *eth = buf;
+            if (ntohs(eth->ether_type) != ETHERTYPE_IP) continue;
+
+            struct ip *ip = (uintptr_t)buf + sizeof(*eth);
+            if (ip->ip_src.s_addr == int_if_ip) continue;
+
             // printf("INT");
             // printf("src=%s ", inet_ntoa(ip->ip_src));
             // printf("dst=%s proto=%s\n", inet_ntoa(ip->ip_dst), proto_name(ip->ip_p));
             // printf("length=%d", ip->ip_hl*4);
 
+            /** extract out (ip, port/id) for NAT translation */
             void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
             uint16_t id_or_port = 0;
             size_t hdr_add = 0;

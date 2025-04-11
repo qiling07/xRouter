@@ -29,7 +29,7 @@ typedef struct {
     unsigned short type;     
     unsigned short cls;    
     unsigned int ttl;        
-    unsigned short rdlength; /
+    unsigned short rdlength; 
     // RDATA 紧跟在后面
 } __attribute__((packed)) DNSAnswer;
 
