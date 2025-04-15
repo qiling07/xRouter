@@ -24,6 +24,8 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/time.h>
+
 
 #define BUF_SZ 65536
 #define NAT_TTL 120 // seconds
@@ -222,6 +224,7 @@ static int get_default_gw(const char *iface_out, size_t iflen, uint32_t *gw_ip);
 static int mac_str2bin(const char *str, uint8_t mac[6]);
 void dump_eth_ip_udp(const uint8_t *buf, size_t len);
 static int mac_bin2str(const uint8_t mac[6], char *str, size_t buflen);
+static void print_tcpdump_packet(void *ip_pkt, const char *iface);
 /* ---------------- main ---------------- */
 int main(int argc, char *argv[]) {
     if (argc != 3) {
@@ -289,7 +292,7 @@ int main(int argc, char *argv[]) {
             ssize_t n = recv(raw_int, buf, BUF_SZ, 0);
             if (n <= 0) continue;
 
-            struct ether_header *eth = buf;
+            struct ether_header *eth = (struct ether_header *) buf;
             if (ntohs(eth->ether_type) != ETHERTYPE_IP) continue;
 
             struct ip *ip = (uintptr_t)buf + sizeof(*eth);
@@ -404,6 +407,8 @@ int main(int argc, char *argv[]) {
                 // printf("cannot find entry\n");
                 continue;
             }
+            // print_tcpdump_packet(ip, "eth0");
+
             e->ts = time(NULL);
             ip->ip_dst.s_addr = e->int_ip;
             if (ip->ip_p == IPPROTO_TCP) {
@@ -536,7 +541,56 @@ static int get_mac_from_arp(uint32_t ip_le, uint8_t mac[6]) {
     fclose(f);
     return -1;
 }
+static void print_tcpdump_packet(void *ip_pkt, const char *iface) {
+    struct ip *ip_hdr = (struct ip *)ip_pkt;
+    if (ip_hdr->ip_p == IPPROTO_TCP) {
+        // Get a pointer to the TCP header
+        struct tcphdr *tcp = (struct tcphdr *)((uint8_t *)ip_pkt + (ip_hdr->ip_hl * 4));
+        
+        // Calculate IP header length and TCP header length in bytes
+        int ip_hdr_len = ip_hdr->ip_hl * 4;
+        int tcp_hdr_len = tcp->doff * 4;
+        
+        // Calculate total payload length (if any)
+        uint16_t ip_total = ntohs(ip_hdr->ip_len);
+        int payload_len = ip_total - ip_hdr_len - tcp_hdr_len;
+        
+        // Build a string representing TCP flags (F for FIN, S for SYN, R for RST, P for PSH, . for ACK, U for URG)
+        char flags[16] = "";
+        if (tcp->fin) strcat(flags, "F");
+        if (tcp->syn) strcat(flags, "S");
+        if (tcp->rst) strcat(flags, "R");
+        if (tcp->psh) strcat(flags, "P");
+        if (tcp->ack) strcat(flags, ".");
+        if (tcp->urg) strcat(flags, "U");
+        
+        // Obtain current time with microsecond precision
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        struct tm tm_info;
+        localtime_r(&tv.tv_sec, &tm_info);
+        char time_buf[16];
+        strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &tm_info);
 
+        char src_ip[INET_ADDRSTRLEN];
+        char dst_ip[INET_ADDRSTRLEN];
+        
+        inet_ntop(AF_INET, &ip_hdr->ip_src, src_ip, sizeof(src_ip));
+        inet_ntop(AF_INET, &ip_hdr->ip_dst, dst_ip, sizeof(dst_ip));
+        
+        // Print in the desired tcpdump-like format:
+        // Format: TIMESTAMP IP src_ip.src_port > dst_ip.dst_port: Flags [flags], seq sequence, win window, length payload_len
+        fprintf(stdout, "%s.%06ld %s IP %s.%u > %s.%u: Flags [%s], seq %u, win %u, length %d\n",
+                time_buf, tv.tv_usec, iface,
+                src_ip, ntohs(tcp->source),
+                dst_ip, ntohs(tcp->dest),
+                flags, ntohl(tcp->seq), ntohs(tcp->window), payload_len);
+    } else {
+        // Optionally, print a fallback message for non-TCP packets.
+        fprintf(stdout, "Non-TCP packet sent on interface %s\n", iface);
+    }
+    fflush(stdout);
+}
 int send_out_via_s1(int fd_s1,
                     const uint8_t *ip_pkt,
                     size_t ip_len,
@@ -563,6 +617,8 @@ int send_out_via_s1(int fd_s1,
     memcpy(saddr.sll_addr, dst_mac, 6);
 
     // dump_eth_ip_udp(frame, frame_len);
+
+    // print_tcpdump_packet(ip_pkt, iface);
 
     if (sendto(fd_s1, frame, frame_len, 0,
                (struct sockaddr *)&saddr, sizeof(saddr)) == -1) {
