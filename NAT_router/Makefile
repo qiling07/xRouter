@@ -1,6 +1,6 @@
 CC = g++
 CFLAGS = -fpermissive
-SRC = nat_router.c
+SRC = nat_router.c table.c debug_print.c utils.c
 TARGET = nat_router
 
 
