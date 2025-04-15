@@ -30,9 +30,7 @@
 #include "debug_print.h"
 #include "utils.h"
 
-
-static uint32_t ext_if_ip; // network‑order
-static uint32_t int_if_ip;
+interface_info int_if_info, ext_if_info;
 static int raw_int = -1, raw_ext = -1;
 
 static void cleanup(int sig) {
@@ -58,8 +56,15 @@ int main(int argc, char *argv[]) {
     signal(SIGTERM, cleanup);
     unsigned char buf[BUF_SZ];
     puts("[+] User‑space NAT running… Ctrl‑C to quit.\n");
-    int_if_ip = iface_ip(int_if);
-    ext_if_ip = iface_ip(ext_if);
+    
+    if (get_interface_info(int_if, &int_if_info) == -1) {
+        fprintf(stderr, "Failed to get info for interface %s\n", int_if);
+        return 1;
+    }
+    if (get_interface_info(ext_if, &ext_if_info) == -1) {
+        fprintf(stderr, "Failed to get info for interface %s\n", ext_if);
+        return 1;
+    }
 
     // get default gateway ip
     uint32_t gw_ip_le;
@@ -115,7 +120,24 @@ int main(int argc, char *argv[]) {
             if (ntohs(eth->ether_type) != ETHERTYPE_IP) continue;
 
             struct ip *ip = (uintptr_t)buf + sizeof(*eth);
-            if (ip->ip_src.s_addr == int_if_ip) continue;
+            if (ip->ip_src.s_addr == int_if_info.ip_addr.s_addr) continue;
+            if (checksum(ip, ip->ip_hl * 4) != 0) {
+                fprintf(stderr, "Invalid IP checksum\n");
+                continue;
+            }
+            if (is_host_address(ntohl(ip->ip_src.s_addr), &int_if_info) == 0) {
+                fprintf(stderr, "Not a host address\n");
+                continue;
+            }
+            if (is_public_address(ntohl(ip->ip_dst.s_addr)) == 0) {
+                fprintf(stderr, "Not a public address\n");
+                continue;
+            }
+            if (!(ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP || ip->ip_p == IPPROTO_ICMP)) {
+                fprintf(stderr, "Not TCP/UDP/ICMP\n");
+                continue;
+            }
+
 
             // printf("INT");
             // printf("src=%s ", inet_ntoa(ip->ip_src));
@@ -145,7 +167,7 @@ int main(int argc, char *argv[]) {
 
             struct nat_entry *e = nat_lookup(ip->ip_src.s_addr, id_or_port, ip->ip_p, 0);
             if (!e) {
-                e = nat_create(ip->ip_src.s_addr, id_or_port, ext_if_ip, ip->ip_p);
+                e = nat_create(ip->ip_src.s_addr, id_or_port, ext_if_info.ip_addr.s_addr, ip->ip_p);
             }
             // printf("nat table after insertion\n");
             // print_nat_table();
@@ -189,8 +211,8 @@ int main(int argc, char *argv[]) {
                 continue;
             }
             struct ip *ip = (void *)(buf + sizeof(*eth));
-            if (ip->ip_src.s_addr == ext_if_ip) {
-                continue;
+            if (ip->ip_src.s_addr == ext_if_info.ip_addr.s_addr) {
+                    continue;
             }
 
             void *l4 = (unsigned char *)ip + ip->ip_hl * 4;

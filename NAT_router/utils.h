@@ -42,4 +42,20 @@ int mac_str2bin(const char *str, uint8_t mac[6]);
 int get_mac_from_arp(uint32_t ip_le, uint8_t mac[6]);
 int get_default_gw(const char *iface_out, size_t iflen, uint32_t *gw_ip);
 
+
+// Define a structure to hold interface information
+typedef struct interface_info {
+	char name[IFNAMSIZ];             // Interface name, e.g., "eth0"
+	struct in_addr ip_addr;          // IP address
+	struct in_addr netmask;          // Subnet mask
+	struct in_addr broadcast;        // Broadcast address (if available)
+	unsigned char hw_addr[6];        // Hardware (MAC) address (binary)
+	char hw_addr_str[18];            // Hardware address as a human-readable string
+} interface_info;
+int get_interface_info(const char *ifname, interface_info *info);
+
+
+int is_host_address(uint32_t ip, interface_info *info);
+int is_public_address(uint32_t ip);
+
 #endif

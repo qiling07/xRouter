@@ -230,4 +230,161 @@ int get_mac_from_arp(uint32_t ip_le, uint8_t mac[6]) {
     return -1;
 }
 
+int get_interface_info(const char *ifname, interface_info *info) {
+    if (!info) {
+        perror("malloc");
+        return -1;
+    }
+    // Copy the interface name into the structure
+    strncpy(info->name, ifname, IFNAMSIZ - 1);
+    info->name[IFNAMSIZ - 1] = '\0';
 
+    // Open a socket for ioctl calls
+    int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        perror("socket");
+        free(info);
+        return -1;
+    }
+
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    ifr.ifr_name[IFNAMSIZ - 1] = '\0';
+
+    // Get IP address
+    if (ioctl(sockfd, SIOCGIFADDR, &ifr) == -1) {
+        perror("ioctl SIOCGIFADDR");
+        close(sockfd);
+        free(info);
+        return -1;
+    }
+    struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
+    info->ip_addr = sin->sin_addr;
+
+    // Get subnet mask
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    if (ioctl(sockfd, SIOCGIFNETMASK, &ifr) == -1) {
+        perror("ioctl SIOCGIFNETMASK");
+        close(sockfd);
+        free(info);
+        return -1;
+    }
+    sin = (struct sockaddr_in *)&ifr.ifr_addr;
+    info->netmask = sin->sin_addr;
+
+    // Get broadcast address (if available)
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    if (ioctl(sockfd, SIOCGIFBRDADDR, &ifr) == -1) {
+        // Broadcast address may not be defined, so set to 0 if not available
+        info->broadcast.s_addr = 0;
+    } else {
+        sin = (struct sockaddr_in *)&ifr.ifr_addr;
+        info->broadcast = sin->sin_addr;
+    }
+
+    // Get hardware (MAC) address
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) == -1) {
+        perror("ioctl SIOCGIFHWADDR");
+        close(sockfd);
+        free(info);
+        return -1;
+    }
+    memcpy(info->hw_addr, ifr.ifr_hwaddr.sa_data, 6);
+    close(sockfd);
+
+    // Format the MAC address as a human‑readable string ("AA:BB:CC:DD:EE:FF")
+    snprintf(info->hw_addr_str, sizeof(info->hw_addr_str),
+             "%02X:%02X:%02X:%02X:%02X:%02X",
+             info->hw_addr[0], info->hw_addr[1], info->hw_addr[2],
+             info->hw_addr[3], info->hw_addr[4], info->hw_addr[5]);
+
+    return 0;
+}
+
+int is_host_address(uint32_t ip, interface_info *info) {
+    uint32_t gateway_ip = ntohl(info->ip_addr.s_addr);
+    uint32_t mask = ntohl(info->netmask.s_addr);
+    uint32_t broadcast = ntohl(info->broadcast.s_addr);
+
+    printf("DEBUG: is_host_address() called with: ip=0x%08x, gateway_ip=0x%08x, mask=0x%08x, broadcast=0x%08x\n", ip, gateway_ip, mask, broadcast);
+
+    if ((ip & mask) != (gateway_ip & mask)) {
+        printf("DEBUG: ip & mask (0x%08x) != gateway_ip & mask (0x%08x), returning 0\n", ip & mask, gateway_ip & mask);
+        return 0;
+    }
+
+    if (ip == gateway_ip) {
+        printf("DEBUG: ip equals gateway_ip (0x%08x), returning 0\n", gateway_ip);
+        return 0;
+    }
+
+    if (ip == (gateway_ip & mask)) {
+        printf("DEBUG: ip equals network address (gateway_ip & mask = 0x%08x), returning 0\n", (gateway_ip & mask));
+        return 0;
+    }
+
+    if (broadcast != 0 && ip == broadcast) {
+        printf("DEBUG: ip equals broadcast (0x%08x), returning 0\n", broadcast);
+        return 0;
+    }
+
+    printf("DEBUG: ip is a valid host address, returning 1\n");
+    return 1;
+}
+
+#include "utils.h"
+
+int is_public_address(uint32_t ip) {
+    // Assumes ip is in host byte order.
+    uint8_t a = ip >> 24;
+    uint8_t b = (ip >> 16) & 0xff;
+    uint8_t c = (ip >> 8) & 0xff;
+    
+    // 0.0.0.0/8 (unspecified)
+    if (a == 0) return 0;
+    
+    // Loopback: 127.0.0.0/8
+    if (a == 127) return 0;
+    
+    // Private network: 10.0.0.0/8
+    if (a == 10) return 0;
+    
+    // Private network: 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
+    if (a == 172 && (b >= 16 && b <= 31)) return 0;
+    
+    // Private network: 192.168.0.0/16
+    if (a == 192 && b == 168) return 0;
+    
+    // Link-local: 169.254.0.0/16
+    if (a == 169 && b == 254) return 0;
+    
+    // Carrier-Grade NAT (CGNAT): 100.64.0.0/10 (100.64.0.0 - 100.127.255.255)
+    if (a == 100 && (b >= 64 && b <= 127)) return 0;
+    
+    // Reserved for IETF protocols: 192.0.0.0/24 (includes some test ranges)
+    if (a == 192 && b == 0) return 0;
+    
+    // Benchmarking addresses: 198.18.0.0/15 (198.18.0.0 - 198.19.255.255)
+    if (a == 198 && (b == 18 || b == 19)) return 0;
+    
+    // Test-Net (documentation): 198.51.100.0/24
+    if (a == 198 && b == 51 && c == 100) return 0;
+    
+    // Test-Net (documentation): 203.0.113.0/24
+    if (a == 203 && b == 0 && c == 113) return 0;
+    
+    // Multicast: 224.0.0.0/4
+    if (a >= 224 && a <= 239) return 0;
+    
+    // Reserved or future use: 240.0.0.0/4 and the broadcast address 255.255.255.255
+    if (a >= 240) return 0;
+    if (ip == 0xFFFFFFFF) return 0;
+    
+    // If none of the above conditions are met, the IP address is public.
+    return 1;
+}
