@@ -120,7 +120,6 @@ int main(int argc, char *argv[]) {
             if (ntohs(eth->ether_type) != ETHERTYPE_IP) continue;
 
             struct ip *ip = (uintptr_t)buf + sizeof(*eth);
-            if (ip->ip_src.s_addr == int_if_info.ip_addr.s_addr) continue;
             if (checksum(ip, ip->ip_hl * 4) != 0) {
                 fprintf(stderr, "Invalid IP checksum\n");
                 continue;
