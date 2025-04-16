@@ -33,72 +33,11 @@
 #include <net/if.h>
 #include <sys/ioctl.h>
 
-int get_interface_mtu(const char *ifname) {
-    struct ifreq ifr = {0};
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return 1500; // fallback
-    strncpy(ifr.ifr_name, ifname, IFNAMSIZ-1);
-    if (ioctl(fd, SIOCGIFMTU, &ifr) < 0) {
-        close(fd);
-        return 1500;
-    }
-    close(fd);
-    return ifr.ifr_mtu;
-}
-
-void fragment_and_send(int sock, struct ip *ip, struct sockaddr_in dst, int mtu) {
-    int hdr_len = ip->ip_hl * 4;
-    int payload_len = ntohs(ip->ip_len) - hdr_len;
-    int max_data = (mtu - hdr_len) & ~7;
-    uint8_t *payload = (uint8_t*)ip + hdr_len;
-    uint16_t orig_off = ntohs(ip->ip_off);
-    int offset = 0;
-    while (payload_len > 0) {
-        int frag_len = payload_len > max_data ? max_data : payload_len;
-        ip->ip_off = htons((orig_off & IP_DF) | ((offset >> 3) & IP_OFFMASK) | (payload_len > max_data ? IP_MF : 0));
-        ip->ip_len = htons(hdr_len + frag_len);
-        ip->ip_sum = 0;
-        ip->ip_sum = checksum(ip, hdr_len);
-        sendto(sock, (void*)ip, hdr_len + frag_len, 0, (struct sockaddr*)&dst, sizeof(dst));
-        offset += frag_len;
-        payload += frag_len;
-        payload_len -= frag_len;
-    }
-}
-
-void send_icmp_frag_needed(int sock, struct ip *orig_ip, struct sockaddr_in dst, int mtu) {
-    // Build ICMP Destination Unreachable (Type 3, Code 4)
-    uint8_t buf[1280];
-    struct ip *ip_hdr = (struct ip*)buf;
-    struct icmphdr *icmp = (struct icmphdr*)(buf + sizeof(*ip_hdr));
-    // prepare outer IP header
-    ip_hdr->ip_hl = sizeof(*ip_hdr) >> 2;
-    ip_hdr->ip_v = 4;
-    ip_hdr->ip_tos = 0;
-    ip_hdr->ip_len = htons(sizeof(*ip_hdr) + sizeof(*icmp) + sizeof(struct ip) + 8);
-    ip_hdr->ip_id = 0;
-    ip_hdr->ip_off = 0;
-    ip_hdr->ip_ttl = 64;
-    ip_hdr->ip_p = IPPROTO_ICMP;
-    ip_hdr->ip_src = orig_ip->ip_dst;
-    ip_hdr->ip_dst = orig_ip->ip_src;
-    ip_hdr->ip_sum = 0;
-    ip_hdr->ip_sum = checksum(ip_hdr, ip_hdr->ip_hl * 4);
-    // prepare ICMP header
-    icmp->type = ICMP_DEST_UNREACH;
-    icmp->code = ICMP_FRAG_NEEDED;
-    icmp->un.frag.mtu = htons( mtu );
-    memcpy(buf + sizeof(*ip_hdr) + sizeof(*icmp), orig_ip, (orig_ip->ip_hl * 4) + 8);
-    icmp->checksum = 0;
-    icmp->checksum = checksum(icmp, sizeof(*icmp) + (orig_ip->ip_hl * 4) + 8);
-    sendto(sock, buf, ntohs(ip_hdr->ip_len), 0, (struct sockaddr*)&dst, sizeof(dst));
-}
 
 volatile sig_atomic_t running = 1;
 
 interface_info int_if_info, ext_if_info;
 int raw_int = -1, raw_ext = -1;
-// uint8_t gw_mac[6];
 
 
 /* Admin thread function to handle NAT table requests via UDP */
@@ -233,11 +172,6 @@ void* internal_thread_func(void *arg) {
         } else if (ip->ip_p == IPPROTO_ICMP) {
             ((struct icmphdr *)l4)->checksum = checksum(l4, l4len);
         }
-        
-        // if (send_out_via_s1(raw_ext, (uint8_t *)ip, n - sizeof(struct ether_header),
-        //     (char *)gw_mac, ext_if_info.name) == -1)
-        //     perror("send ext");
-
 
         struct sockaddr_in dst = {
             .sin_family = AF_INET,
@@ -251,7 +185,7 @@ void* internal_thread_func(void *arg) {
                              sizeof(dst));
         if (ret < 0) {
             if (errno == EMSGSIZE) {
-                int mtu = get_interface_mtu(ext_if_info.name);
+                int mtu = ext_if_info.mtu;
                 // Packet too large for MTU
                 if (ip->ip_off & htons(IP_DF)) {
                     // Don't fragment: send ICMP "Fragmentation Needed"
@@ -357,19 +291,6 @@ void* external_thread_func(void *arg) {
             ((struct icmphdr *)l4)->checksum = checksum(l4, l4len);
         }
         
-        // struct in_addr host_ip;
-        // host_ip.s_addr = e->int_ip;
-        // uint8_t host_mac[6];
-        // if (get_mac_from_arp(e->int_ip, host_mac) == -1) {
-        //     fprintf(stderr, "Interface %s (%s) not in ARP cache\n", int_if_info.name, inet_ntoa(host_ip));
-        //     continue;
-        // }
-        
-        // if (send_out_via_s1(raw_int, (uint8_t *)ip, n - sizeof(struct ether_header),
-        //     (char *)host_mac, int_if_info.name) == -1)
-        //     perror("send int");
-
-
         struct sockaddr_in dst = {
             .sin_family = AF_INET,
             .sin_addr  = ip->ip_dst,
@@ -383,7 +304,7 @@ void* external_thread_func(void *arg) {
         if (ret < 0) {
             if (errno == EMSGSIZE) {
                 // Packet too large for MTU
-                int mtu = get_interface_mtu(ext_if_info.name);
+                int mtu = int_if_info.mtu;
                 if (ip->ip_off & htons(IP_DF)) {
                     // Don't fragment: send ICMP "Fragmentation Needed"
                     send_icmp_frag_needed(ip_sock, ip, dst, mtu);
@@ -393,7 +314,7 @@ void* external_thread_func(void *arg) {
                 }
             } else {
                 perror("raw sendto");
-                print_tcpdump_packet(ip, ext_if_info.name);
+                print_tcpdump_packet(ip, int_if_info.name);
             }
         }
     }
@@ -451,29 +372,6 @@ int main(int argc, char *argv[]) {
         printf("External netmask: %s\n", inet_ntoa(ext_if_info.netmask));
         printf("External broadcast: %s\n", inet_ntoa(ext_if_info.broadcast));
     }
-
-    // get default gateway ip
-    // uint32_t gw_ip_le;
-    // char gw_mac_str[40];
-
-    // if (get_default_gw(ext_if_info.name, sizeof(ext_if_info.name), &gw_ip_le) == -1) {
-    //     fprintf(stderr, "No default gateway found\n");
-    //     return 1;
-    // }
-
-    // // get default gateway mac
-    // struct in_addr gw_ip;
-    // gw_ip.s_addr = gw_ip_le;
-    // printf("Gateway IP = %s\n", inet_ntoa(gw_ip));
-
-    // if (get_mac_from_arp(gw_ip_le, gw_mac) == -1) {
-    //     fprintf(stderr, "Gateway %s (%s) not in ARP cache\n",
-    //         ext_if_info.name, inet_ntoa(gw_ip));
-    //     return 1;
-    // }
-    // // just for debugging
-    // mac_bin2str(gw_mac, gw_mac_str, sizeof(gw_mac_str));
-    // printf("Gateway MAC = %s -------------------\n", gw_mac_str);
 
     pthread_t internal_thread, external_thread, gc_thread, admin_thread;
 

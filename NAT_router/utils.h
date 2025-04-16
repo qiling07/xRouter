@@ -33,6 +33,8 @@ int create_raw(const char *ifname);
 uint32_t iface_ip(const char *ifname);
 
 int send_out_via_s1(int fd_s1, const uint8_t *ip_pkt, size_t ip_len, const char *dest_mac, const char *iface);
+void fragment_and_send(int sock, struct ip *ip, struct sockaddr_in dst, int mtu);
+void send_icmp_frag_needed(int sock, struct ip *orig_ip, struct sockaddr_in dst, int mtu);
 
 int get_iface_mac(const char *ifname, uint8_t mac[6]);
 
@@ -51,6 +53,7 @@ typedef struct interface_info {
 	struct in_addr broadcast;        // Broadcast address (if available)
 	unsigned char hw_addr[6];        // Hardware (MAC) address (binary)
 	char hw_addr_str[18];            // Hardware address as a human-readable string
+	int mtu;
 } interface_info;
 int get_interface_info(const char *ifname, interface_info *info);
 

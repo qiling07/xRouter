@@ -285,6 +285,17 @@ int get_interface_info(const char *ifname, interface_info *info) {
         info->broadcast = sin->sin_addr;
     }
 
+    // Get MTU
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    if (ioctl(sockfd, SIOCGIFMTU, &ifr) == -1) {
+        perror("ioctl SIOCGIFMTU");
+        close(sockfd);
+        free(info);
+        return -1;
+    }
+    info->mtu = ifr.ifr_mtu;
+
     // Get hardware (MAC) address
     memset(&ifr, 0, sizeof(ifr));
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
@@ -387,4 +398,53 @@ int is_public_address(uint32_t ip) {
     
     // If none of the above conditions are met, the IP address is public.
     return 1;
+}
+
+
+void fragment_and_send(int sock, struct ip *ip, struct sockaddr_in dst, int mtu) {
+    int hdr_len = ip->ip_hl * 4;
+    int payload_len = ntohs(ip->ip_len) - hdr_len;
+    int max_data = (mtu - hdr_len) & ~7;
+    uint8_t *payload = (uint8_t*)ip + hdr_len;
+    uint16_t orig_off = ntohs(ip->ip_off);
+    int offset = 0;
+    while (payload_len > 0) {
+        int frag_len = payload_len > max_data ? max_data : payload_len;
+        ip->ip_off = htons((orig_off & IP_DF) | ((offset >> 3) & IP_OFFMASK) | (payload_len > max_data ? IP_MF : 0));
+        ip->ip_len = htons(hdr_len + frag_len);
+        ip->ip_sum = 0;
+        ip->ip_sum = checksum(ip, hdr_len);
+        sendto(sock, (void*)ip, hdr_len + frag_len, 0, (struct sockaddr*)&dst, sizeof(dst));
+        offset += frag_len;
+        payload += frag_len;
+        payload_len -= frag_len;
+    }
+}
+
+void send_icmp_frag_needed(int sock, struct ip *orig_ip, struct sockaddr_in dst, int mtu) {
+    // Build ICMP Destination Unreachable (Type 3, Code 4)
+    uint8_t buf[1280];
+    struct ip *ip_hdr = (struct ip*)buf;
+    struct icmphdr *icmp = (struct icmphdr*)(buf + sizeof(*ip_hdr));
+    // prepare outer IP header
+    ip_hdr->ip_hl = sizeof(*ip_hdr) >> 2;
+    ip_hdr->ip_v = 4;
+    ip_hdr->ip_tos = 0;
+    ip_hdr->ip_len = htons(sizeof(*ip_hdr) + sizeof(*icmp) + sizeof(struct ip) + 8);
+    ip_hdr->ip_id = 0;
+    ip_hdr->ip_off = 0;
+    ip_hdr->ip_ttl = 64;
+    ip_hdr->ip_p = IPPROTO_ICMP;
+    ip_hdr->ip_src = orig_ip->ip_dst;
+    ip_hdr->ip_dst = orig_ip->ip_src;
+    ip_hdr->ip_sum = 0;
+    ip_hdr->ip_sum = checksum(ip_hdr, ip_hdr->ip_hl * 4);
+    // prepare ICMP header
+    icmp->type = ICMP_DEST_UNREACH;
+    icmp->code = ICMP_FRAG_NEEDED;
+    icmp->un.frag.mtu = htons( mtu );
+    memcpy(buf + sizeof(*ip_hdr) + sizeof(*icmp), orig_ip, (orig_ip->ip_hl * 4) + 8);
+    icmp->checksum = 0;
+    icmp->checksum = checksum(icmp, sizeof(*icmp) + (orig_ip->ip_hl * 4) + 8);
+    sendto(sock, buf, ntohs(ip_hdr->ip_len), 0, (struct sockaddr*)&dst, sizeof(dst));
 }
