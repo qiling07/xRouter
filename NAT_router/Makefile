@@ -13,3 +13,20 @@ $(TARGET): $(SRC)
 
 clean:
 	rm -f $(TARGET) *.o
+
+config:
+	iptables-legacy -I INPUT -i eth0 -p tcp --dport 49152:65535 -j DROP
+
+tests: test-ping test-dns test-curl
+	@echo "Running tests..."
+
+test-ping:
+	ping -c 10 8.8.8.8
+
+test-dns:
+	nslookup www.youtube.com
+
+test-curl:
+	curl -O https://link.testfile.org/500MB
+	sha256sum 500MB | grep -q e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
+		&& echo "OK" || echo "FAIL"

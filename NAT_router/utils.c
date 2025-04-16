@@ -402,22 +402,35 @@ int is_public_address(uint32_t ip) {
 
 
 void fragment_and_send(int sock, struct ip *ip, struct sockaddr_in dst, int mtu) {
-    int hdr_len = ip->ip_hl * 4;
-    int payload_len = ntohs(ip->ip_len) - hdr_len;
-    int max_data = (mtu - hdr_len) & ~7;
-    uint8_t *payload = (uint8_t*)ip + hdr_len;
-    uint16_t orig_off = ntohs(ip->ip_off);
+    int hdr_len    = ip->ip_hl * 4;
+    int total_len  = ntohs(ip->ip_len);
+    int payload_len= total_len - hdr_len;
+    int max_data   = (mtu - hdr_len) & ~7;  // must be 8‑byte aligned
+    uint16_t orig_off = ntohs(ip->ip_off) & IP_DF;  // preserve DF flag
+    uint8_t *orig_pkt = (uint8_t*)ip;
+    uint8_t *orig_payload = orig_pkt + hdr_len;
+
     int offset = 0;
     while (payload_len > 0) {
-        int frag_len = payload_len > max_data ? max_data : payload_len;
-        ip->ip_off = htons((orig_off & IP_DF) | ((offset >> 3) & IP_OFFMASK) | (payload_len > max_data ? IP_MF : 0));
-        ip->ip_len = htons(hdr_len + frag_len);
-        ip->ip_sum = 0;
-        ip->ip_sum = checksum(ip, hdr_len);
-        sendto(sock, (void*)ip, hdr_len + frag_len, 0, (struct sockaddr*)&dst, sizeof(dst));
-        offset += frag_len;
-        payload += frag_len;
-        payload_len -= frag_len;
+        int this_data = payload_len > max_data ? max_data : payload_len;
+        // build a local fragment buffer
+        uint8_t *frag = malloc(hdr_len + this_data);
+        memcpy(frag, orig_pkt, hdr_len);               // copy IP header
+        memcpy(frag+hdr_len, orig_payload+offset, this_data); // copy correct slice
+
+        struct ip *fip = (struct ip*)frag;
+        fip->ip_len = htons(hdr_len + this_data);
+        fip->ip_off = htons(orig_off | ((offset>>3)&IP_OFFMASK) |
+                            (payload_len>max_data ? IP_MF : 0));
+        fip->ip_sum = 0;
+        fip->ip_sum = checksum(fip, hdr_len);
+
+        sendto(sock, frag, hdr_len + this_data, 0,
+               (struct sockaddr*)&dst, sizeof(dst));
+        free(frag);
+
+        offset      += this_data;
+        payload_len -= this_data;
     }
 }
 

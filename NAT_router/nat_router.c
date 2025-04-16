@@ -92,8 +92,69 @@ void *admin_thread_func(void *arg) {
     pthread_exit(NULL);
 }
 
-void* internal_thread_func(void *arg) {
-    unsigned char buf[BUF_SZ];
+
+void handle_internal_packet(unsigned char *buf, ssize_t n) {
+    struct ether_header *eth = (struct ether_header *)buf;
+    if (ntohs(eth->ether_type) != ETHERTYPE_IP)
+        return;
+    struct ip *ip = (struct ip *)(buf + sizeof(*eth));
+    if (checksum(ip, ip->ip_hl * 4) != 0) {
+        return;
+    }
+    if (is_host_address(ntohl(ip->ip_src.s_addr), &int_if_info) == 0) {
+        return;
+    }
+    if (is_public_address(ntohl(ip->ip_dst.s_addr)) == 0) {
+        return;
+    }
+    if (!(ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP || ip->ip_p == IPPROTO_ICMP)) {
+        return;
+    }
+    
+    void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
+    uint16_t id_or_port = 0;
+    size_t hdr_add = 0;
+    if (ip->ip_p == IPPROTO_TCP) {
+        struct tcphdr *t = l4;
+        id_or_port = ntohs(t->source);
+        hdr_add = t->doff * 4;
+        t->check = 0;
+    } else if (ip->ip_p == IPPROTO_UDP) {
+        struct udphdr *u = l4;
+        id_or_port = ntohs(u->source);
+        hdr_add = sizeof(struct udphdr);
+        u->check = 0;
+    } else if (ip->ip_p == IPPROTO_ICMP) {
+        struct icmphdr *icmp = l4;
+        id_or_port = ntohs(*(uint16_t *)(l4 + 4));
+        hdr_add = sizeof(struct icmphdr);
+        icmp->checksum = 0;
+    }
+    
+    struct nat_entry *e = nat_lookup(ip->ip_src.s_addr, id_or_port, ip->ip_p, 0);
+    if (!e) {
+        e = nat_create(ip->ip_src.s_addr, id_or_port, ext_if_info.ip_addr.s_addr, ip->ip_p);
+    }
+    e->ts = time(NULL);
+    ip->ip_src.s_addr = e->ext_ip;
+    if (ip->ip_p == IPPROTO_TCP) {
+        ((struct tcphdr *)l4)->source = htons(e->ext_port);
+    } else if (ip->ip_p == IPPROTO_UDP) {
+        ((struct udphdr *)l4)->source = htons(e->ext_port);
+    }
+    ip->ip_sum = 0;
+    ip->ip_sum = checksum(ip, ip->ip_hl * 4);
+    size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
+    if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {
+        uint16_t cks = l4_checksum(ip, l4, l4len);
+        if (ip->ip_p == IPPROTO_TCP)
+            ((struct tcphdr *)l4)->check = cks;
+        else
+            ((struct udphdr *)l4)->check = cks;
+    } else if (ip->ip_p == IPPROTO_ICMP) {
+        ((struct icmphdr *)l4)->checksum = checksum(l4, l4len);
+    }
+
     int ip_sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
     if (ip_sock < 0) { perror("socket"); exit(1); }
     int on = 1;
@@ -105,107 +166,141 @@ void* internal_thread_func(void *arg) {
         ext_if_info.name, strlen(ext_if_info.name)) < 0) {
         perror("bind to device");
     }
-    while (running) {
-        ssize_t n = recv(raw_int, buf, BUF_SZ, 0);
-        if (n <= 0) continue;
-        struct ether_header *eth = (struct ether_header *)buf;
-        if (ntohs(eth->ether_type) != ETHERTYPE_IP)
-            continue;
-        struct ip *ip = (struct ip *)(buf + sizeof(*eth));
-        if (checksum(ip, ip->ip_hl * 4) != 0) {
-            // fprintf(stderr, "Invalid IP checksum\n");
-            continue;
-        }
-        if (is_host_address(ntohl(ip->ip_src.s_addr), &int_if_info) == 0) {
-            // fprintf(stderr, "Not a host address\n");
-            continue;
-        }
-        if (is_public_address(ntohl(ip->ip_dst.s_addr)) == 0) {
-            // fprintf(stderr, "Not a public address\n");
-            continue;
-        }
-        if (!(ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP || ip->ip_p == IPPROTO_ICMP)) {
-            // fprintf(stderr, "Not TCP/UDP/ICMP\n");
-            continue;
-        }
-        
-        void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
-        uint16_t id_or_port = 0;
-        size_t hdr_add = 0;
-        if (ip->ip_p == IPPROTO_TCP) {
-            struct tcphdr *t = l4;
-            id_or_port = ntohs(t->source);
-            hdr_add = t->doff * 4;
-            t->check = 0;
-        } else if (ip->ip_p == IPPROTO_UDP) {
-            struct udphdr *u = l4;
-            id_or_port = ntohs(u->source);
-            hdr_add = sizeof(struct udphdr);
-            u->check = 0;
-        } else if (ip->ip_p == IPPROTO_ICMP) {
-            struct icmphdr *icmp = l4;
-            id_or_port = ntohs(*(uint16_t *)(l4 + 4));
-            hdr_add = sizeof(struct icmphdr);
-            icmp->checksum = 0;
-        }
-        
-        struct nat_entry *e = nat_lookup(ip->ip_src.s_addr, id_or_port, ip->ip_p, 0);
-        if (!e) {
-            e = nat_create(ip->ip_src.s_addr, id_or_port, ext_if_info.ip_addr.s_addr, ip->ip_p);
-        }
-        e->ts = time(NULL);
-        ip->ip_src.s_addr = e->ext_ip;
-        if (ip->ip_p == IPPROTO_TCP) {
-            ((struct tcphdr *)l4)->source = htons(e->ext_port);
-        } else if (ip->ip_p == IPPROTO_UDP) {
-            ((struct udphdr *)l4)->source = htons(e->ext_port);
-        }
-        ip->ip_sum = 0;
-        ip->ip_sum = checksum(ip, ip->ip_hl * 4);
-        size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
-        if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {
-            uint16_t cks = l4_checksum(ip, l4, l4len);
-            if (ip->ip_p == IPPROTO_TCP)
-                ((struct tcphdr *)l4)->check = cks;
-            else
-                ((struct udphdr *)l4)->check = cks;
-        } else if (ip->ip_p == IPPROTO_ICMP) {
-            ((struct icmphdr *)l4)->checksum = checksum(l4, l4len);
-        }
 
-        struct sockaddr_in dst = {
-            .sin_family = AF_INET,
-            .sin_addr  = ip->ip_dst,
-        };
-        ssize_t ret = sendto(ip_sock,
-                             (void*)ip,
-                             ntohs(ip->ip_len),
-                             0,
-                             (struct sockaddr*)&dst,
-                             sizeof(dst));
-        if (ret < 0) {
-            if (errno == EMSGSIZE) {
-                int mtu = ext_if_info.mtu;
-                // Packet too large for MTU
-                if (ip->ip_off & htons(IP_DF)) {
-                    // Don't fragment: send ICMP "Fragmentation Needed"
-                    send_icmp_frag_needed(ip_sock, ip, dst, mtu);
-                } else {
-                    // Fragment allowed: manually fragment and send
-                    fragment_and_send(ip_sock, ip, dst, mtu);
-                }
+    struct sockaddr_in dst = {
+        .sin_family = AF_INET,
+        .sin_addr  = ip->ip_dst,
+    };
+    ssize_t ret = sendto(ip_sock,
+                         (void*)ip,
+                         ntohs(ip->ip_len),
+                         0,
+                         (struct sockaddr*)&dst,
+                         sizeof(dst));
+    if (ret < 0) {
+        if (errno == EMSGSIZE) {
+            int mtu = ext_if_info.mtu;
+            if (ip->ip_off & htons(IP_DF)) {
+                send_icmp_frag_needed(ip_sock, ip, dst, mtu);
             } else {
-                perror("raw sendto");
-                print_tcpdump_packet(ip, ext_if_info.name);
+                fragment_and_send(ip_sock, ip, dst, mtu);
             }
+        } else {
+            perror("raw sendto");
+            print_tcpdump_packet(ip, ext_if_info.name);
         }
     }
-    close(ip_sock);
+}
+struct packet_data {
+    unsigned char *data;
+    ssize_t len;
+};
+void* packet_worker_func_internal(void *arg) {
+    struct packet_data *pkt = arg;
+    handle_internal_packet(pkt->data, pkt->len);
+    free(pkt->data);
+    free(pkt);
     return NULL;
 }
 
-void* external_thread_func(void *arg) {
+void* internal_thread_func(void *arg) {
     unsigned char buf[BUF_SZ];
+    while (running) {
+        ssize_t n = recv(raw_int, buf, BUF_SZ, 0);
+        if (n <= 0) continue;
+
+        unsigned char *pkt_copy = malloc(n);
+        if (!pkt_copy) continue;
+        memcpy(pkt_copy, buf, n);
+
+        pthread_t worker;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+
+        struct packet_data *p = malloc(sizeof(struct packet_data));
+        if (!p) {
+            free(pkt_copy);
+            continue;
+        }
+        p->data = pkt_copy;
+        p->len = n;
+
+
+
+        if (pthread_create(&worker, &attr, packet_worker_func_internal, p) != 0) {
+            free(pkt_copy);
+            free(p);
+        }
+        pthread_attr_destroy(&attr);
+    }
+    return NULL;
+}
+
+void handle_external_packet(unsigned char *buf, ssize_t n) {
+    struct ether_header *eth = (struct ether_header *)buf;
+    if (ntohs(eth->ether_type) != ETHERTYPE_IP)
+        return;
+    struct ip *ip = (struct ip *)(buf + sizeof(*eth));
+
+    if (checksum(ip, ip->ip_hl * 4) != 0) {
+        return;
+    }
+    if (is_public_address(ntohl(ip->ip_src.s_addr)) == 0) {
+        return;
+    }
+    if (ip->ip_dst.s_addr != ext_if_info.ip_addr.s_addr) {
+        return;
+    }
+    if (!(ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP || ip->ip_p == IPPROTO_ICMP)) {
+        return;
+    }
+    
+    void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
+    uint16_t id_or_port = 0;
+    size_t hdr_add = 0;
+    if (ip->ip_p == IPPROTO_TCP) {
+        struct tcphdr *t = l4;
+        id_or_port = ntohs(t->dest);
+        hdr_add = t->doff * 4;
+        t->check = 0;
+    } else if (ip->ip_p == IPPROTO_UDP) {
+        struct udphdr *u = l4;
+        id_or_port = ntohs(u->dest);
+        hdr_add = sizeof(struct udphdr);
+        u->check = 0;
+    } else if (ip->ip_p == IPPROTO_ICMP) {
+        struct icmphdr *c = l4;
+        id_or_port = ntohs(c->un.echo.id);
+        hdr_add = sizeof(struct icmphdr);
+        c->checksum = 0;
+    } else {
+        return;
+    }
+    
+    struct nat_entry *e = nat_lookup(ip->ip_dst.s_addr, id_or_port, ip->ip_p, 1);
+    if (!e)
+        return;
+    e->ts = time(NULL);
+    ip->ip_dst.s_addr = e->int_ip;
+    if (ip->ip_p == IPPROTO_TCP) {
+        ((struct tcphdr *)l4)->dest = htons(e->int_port);
+    } else if (ip->ip_p == IPPROTO_UDP) {
+        ((struct udphdr *)l4)->dest = htons(e->int_port);
+    }
+    ip->ip_sum = 0;
+    ip->ip_sum = checksum(ip, ip->ip_hl * 4);
+    size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
+    if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {
+        uint16_t cks = l4_checksum(ip, l4, l4len);
+        if (ip->ip_p == IPPROTO_TCP) {
+            ((struct tcphdr *)l4)->check = cks;
+        } else
+            ((struct udphdr *)l4)->check = cks;
+    } else if (ip->ip_p == IPPROTO_ICMP) {
+        ((struct icmphdr *)l4)->checksum = checksum(l4, l4len);
+    }
+
     int ip_sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
     if (ip_sock < 0) { perror("socket"); exit(1); }
     int on = 1;
@@ -217,109 +312,70 @@ void* external_thread_func(void *arg) {
         int_if_info.name, strlen(int_if_info.name)) < 0) {
         perror("bind to device");
     }
+
+    struct sockaddr_in dst = {
+        .sin_family = AF_INET,
+        .sin_addr  = ip->ip_dst,
+    };
+    ssize_t ret = sendto(ip_sock,
+                         (void*)ip,
+                         ntohs(ip->ip_len),
+                         0,
+                         (struct sockaddr*)&dst,
+                         sizeof(dst));
+    if (ret < 0) {
+        if (errno == EMSGSIZE) {
+            int mtu = int_if_info.mtu;
+            if (ip->ip_off & htons(IP_DF)) {
+                send_icmp_frag_needed(ip_sock, ip, dst, mtu);
+            } else {
+                fragment_and_send(ip_sock, ip, dst, mtu);
+            }
+        } else {
+            perror("raw sendto");
+            print_tcpdump_packet(ip, int_if_info.name);
+        }
+    }
+}
+
+void* packet_worker_func_external(void *arg) {
+    struct packet_data *pkt = arg;
+    handle_external_packet(pkt->data, pkt->len);
+    free(pkt->data);
+    free(pkt);
+    return NULL;
+}
+
+void* external_thread_func(void *arg) {
+    unsigned char buf[BUF_SZ];
     while (running) {
         ssize_t n = recv(raw_ext, buf, BUF_SZ, 0);
         if (n <= 0) continue;
-        struct ether_header *eth = (struct ether_header *)buf;
-        if (ntohs(eth->ether_type) != ETHERTYPE_IP)
-            continue;
-        struct ip *ip = (struct ip *)(buf + sizeof(*eth));
 
-        // if (ip->ip_src.s_addr == ext_if_info.ip_addr.s_addr) {
-        //     fprintf(stderr, "Packet from external interface\n");
-        //     continue;        
-        // }
-        if (checksum(ip, ip->ip_hl * 4) != 0) {
-            // fprintf(stderr, "Invalid IP checksum\n");
+        unsigned char *pkt_copy = malloc(n);
+        if (!pkt_copy) continue;
+        memcpy(pkt_copy, buf, n);
+
+        pthread_t worker;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        struct packet_data *p = malloc(sizeof(struct packet_data));
+        if (!p) {
+            free(pkt_copy);
             continue;
         }
-        if (is_public_address(ntohl(ip->ip_src.s_addr)) == 0) {
-            // fprintf(stderr, "Not a public address\n");
-            continue;
+        p->data = pkt_copy;
+        p->len = n;
+        if (pthread_create(&worker, &attr, packet_worker_func_external, p) != 0) {
+            free(pkt_copy);
+            free(p);
         }
-        if (ip->ip_dst.s_addr != ext_if_info.ip_addr.s_addr) {
-            // fprintf(stderr, "Invalid dst address\n");
-            continue;
-        }
-        if (!(ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP || ip->ip_p == IPPROTO_ICMP)) {
-            // fprintf(stderr, "Not TCP/UDP/ICMP\n");
-            continue;
-        }
-        
-        void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
-        uint16_t id_or_port = 0;
-        size_t hdr_add = 0;
-        if (ip->ip_p == IPPROTO_TCP) {
-            struct tcphdr *t = l4;
-            id_or_port = ntohs(t->dest);
-            hdr_add = t->doff * 4;
-            t->check = 0;
-        } else if (ip->ip_p == IPPROTO_UDP) {
-            struct udphdr *u = l4;
-            id_or_port = ntohs(u->dest);
-            hdr_add = sizeof(struct udphdr);
-            u->check = 0;
-        } else if (ip->ip_p == IPPROTO_ICMP) {
-            struct icmphdr *c = l4;
-            id_or_port = ntohs(c->un.echo.id);
-            hdr_add = sizeof(struct icmphdr);
-            c->checksum = 0;
-        } else {
-            continue;
-        }
-        
-        struct nat_entry *e = nat_lookup(ip->ip_dst.s_addr, id_or_port, ip->ip_p, 1);
-        if (!e)
-            continue;
-        e->ts = time(NULL);
-        ip->ip_dst.s_addr = e->int_ip;
-        if (ip->ip_p == IPPROTO_TCP) {
-            ((struct tcphdr *)l4)->dest = htons(e->int_port);
-        } else if (ip->ip_p == IPPROTO_UDP) {
-            ((struct udphdr *)l4)->dest = htons(e->int_port);
-        }
-        ip->ip_sum = 0;
-        ip->ip_sum = checksum(ip, ip->ip_hl * 4);
-        size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
-        if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {
-            uint16_t cks = l4_checksum(ip, l4, l4len);
-            if (ip->ip_p == IPPROTO_TCP) {
-                ((struct tcphdr *)l4)->check = cks;
-            } else
-                ((struct udphdr *)l4)->check = cks;
-        } else if (ip->ip_p == IPPROTO_ICMP) {
-            ((struct icmphdr *)l4)->checksum = checksum(l4, l4len);
-        }
-        
-        struct sockaddr_in dst = {
-            .sin_family = AF_INET,
-            .sin_addr  = ip->ip_dst,
-        };
-        ssize_t ret = sendto(ip_sock,
-                             (void*)ip,
-                             ntohs(ip->ip_len),
-                             0,
-                             (struct sockaddr*)&dst,
-                             sizeof(dst));
-        if (ret < 0) {
-            if (errno == EMSGSIZE) {
-                // Packet too large for MTU
-                int mtu = int_if_info.mtu;
-                if (ip->ip_off & htons(IP_DF)) {
-                    // Don't fragment: send ICMP "Fragmentation Needed"
-                    send_icmp_frag_needed(ip_sock, ip, dst, mtu);
-                } else {
-                    // Fragment allowed: manually fragment and send
-                    fragment_and_send(ip_sock, ip, dst, mtu);
-                }
-            } else {
-                perror("raw sendto");
-                print_tcpdump_packet(ip, int_if_info.name);
-            }
-        }
+        pthread_attr_destroy(&attr);
     }
     return NULL;
 }
+
 
 void* nat_gc_thread_func(void *arg) {
     while (running) {
