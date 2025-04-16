@@ -23,25 +23,30 @@
 #include <sys/time.h>
 
 #define NAT_TTL 120 // seconds
-
+#define NAT_TABLE_SIZE 1024
 
 /* ---------------- NAT table ---------------- */
 struct nat_entry {
-    uint32_t int_ip;   // internal host IP
-    uint16_t int_port; // TCP/UDP port  or  ICMP identifier
-    uint32_t ext_ip;   // external iface IP (SNAT)
-    uint16_t ext_port; // translated port / identifier
-    uint8_t proto;     // IPPROTO_TCP / UDP / ICMP
-    time_t ts;         // last activity
-    struct nat_entry *next;
+    uint32_t int_ip;      // internal host IP
+    uint16_t int_port;    // TCP/UDP port or ICMP identifier
+    uint32_t ext_ip;      // external iface IP (SNAT)
+    uint16_t ext_port;    // translated port / identifier
+    uint8_t proto;        // IPPROTO_TCP / UDP / ICMP
+    time_t ts;            // last activity
+    // Pointers for hash table chaining
+    struct nat_entry *int_next;
+    struct nat_entry *ext_next;
 };
 
-extern struct nat_entry *nat_head;
-
+extern struct nat_entry *nat_internal[NAT_TABLE_SIZE];
+extern struct nat_entry *nat_external[NAT_TABLE_SIZE];
 
 struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reverse);
 int is_ext_port_taken(uint16_t ext_port, uint8_t proto);
 struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint8_t proto);
 void nat_gc();
+
+void print_nat_table();
+void get_nat_table_string(char *buf, size_t bufsize);
 
 #endif

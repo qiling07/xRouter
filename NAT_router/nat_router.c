@@ -25,6 +25,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <pthread.h>
 
 #include "table.h"
 #include "debug_print.h"
@@ -33,14 +34,70 @@
 interface_info int_if_info, ext_if_info;
 static int raw_int = -1, raw_ext = -1;
 
+pthread_t admin_thread;
+
+
 static void cleanup(int sig) {
     if (raw_int != -1)
         close(raw_int);
     if (raw_ext != -1)
         close(raw_ext);
+    pthread_cancel(admin_thread);
     puts("\n[+] NAT stopped.");
     exit(0);
 }
+
+/* Admin thread function to handle NAT table requests via UDP */
+void *admin_thread_func(void *arg) {
+    int admin_fd;
+    struct sockaddr_in admin_addr, client_addr;
+    socklen_t client_addr_len;
+    char admin_buf[1024];
+    char nat_table_str[16384];
+    admin_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (admin_fd < 0) {
+        perror("Admin thread: socket creation failed");
+        pthread_exit(NULL);
+    }
+
+    memset(&admin_addr, 0, sizeof(admin_addr));
+    admin_addr.sin_family = AF_INET;
+    admin_addr.sin_addr.s_addr = INADDR_ANY;
+    admin_addr.sin_port = htons(9999);
+
+    if (bind(admin_fd, (struct sockaddr *)&admin_addr, sizeof(admin_addr)) < 0) {
+        perror("Admin thread: bind failed");
+        close(admin_fd);
+        pthread_exit(NULL);
+    }
+
+    printf("Admin thread: listening on port 9999...\n");
+
+    while (1) {
+        client_addr_len = sizeof(client_addr);
+        int n = recvfrom(admin_fd, admin_buf, sizeof(admin_buf) - 1, 0,
+                           (struct sockaddr *)&client_addr, &client_addr_len);
+        if (n < 0) {
+            perror("Admin thread: recvfrom failed");
+            continue;
+        }
+        admin_buf[n] = '\0';
+        printf("Admin thread: received command: %s\n", admin_buf);
+        if (strcmp(admin_buf, "PRINT_NAT_TABLE") == 0) {
+            memset(nat_table_str, 0, sizeof(nat_table_str));
+            get_nat_table_string(nat_table_str, sizeof(nat_table_str));
+            if (sendto(admin_fd, nat_table_str, strlen(nat_table_str), 0,
+                       (struct sockaddr *)&client_addr, client_addr_len) < 0) {
+                perror("Admin thread: sendto failed");
+            }
+        }
+    }
+
+    close(admin_fd);
+    pthread_exit(NULL);
+}
+
+
 
 
 int main(int argc, char *argv[]) {
@@ -89,6 +146,14 @@ int main(int argc, char *argv[]) {
     // just for debugging
     mac_bin2str(gw_mac, gw_mac_str, sizeof(gw_mac_str));
     printf("Gateway MAC = %s -------------------\n", gw_mac_str);
+
+    // Spawn admin thread to handle NAT table requests via UDP.
+    if (pthread_create(&admin_thread, NULL, admin_thread_func, NULL) != 0) {
+        perror("Failed to create admin thread");
+        exit(EXIT_FAILURE);
+    }
+    pthread_detach(admin_thread);
+    printf("Admin thread spawned.\n");
 
     while (1) {
         nat_gc();

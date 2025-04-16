@@ -1,5 +1,5 @@
 CC = g++
-CFLAGS = -fpermissive
+CFLAGS = -fpermissive -pthread
 SRC = nat_router.c table.c debug_print.c utils.c
 TARGET = nat_router
 
