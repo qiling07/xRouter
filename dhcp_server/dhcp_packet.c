@@ -146,21 +146,24 @@ void print_dhcp_header(struct dhcp_packet *packet)
         offset += snprintf(buf + offset, sizeof(buf) - offset, "Unknown flags value: %u\n", packet->flags);
         break;
     }
-    printf("print_dhcp_header 5\n");
     // ciaddr
     struct in_addr addr;
+    char ip_str[INET_ADDRSTRLEN];
     addr.s_addr = packet->ciaddr;
-    offset += snprintf(buf + offset, sizeof(buf) - offset, "ciaddr = %s\n", inet_ntop(addr));
+    inet_ntop(AF_INET, &addr, ip_str, INET_ADDRSTRLEN);
+    offset += snprintf(buf + offset, sizeof(buf) - offset, "ciaddr = %s\n", ip_str);
     // yiaddr
     addr.s_addr = packet->yiaddr;
-    offset += snprintf(buf + offset, sizeof(buf) - offset, "yiaddr = %s\n", inet_ntop(addr));
+    inet_ntop(AF_INET, &addr, ip_str, INET_ADDRSTRLEN);
+    offset += snprintf(buf + offset, sizeof(buf) - offset, "yiaddr = %s\n", ip_str);
     // siaddr
     addr.s_addr = packet->siaddr;
-    offset += snprintf(buf + offset, sizeof(buf) - offset, "siaddr = %s\n", inet_ntop(addr));
+    inet_ntop(AF_INET, &addr, ip_str, INET_ADDRSTRLEN);
+    offset += snprintf(buf + offset, sizeof(buf) - offset, "siaddr = %s\n", ip_str);
     // giaddr
     addr.s_addr = packet->giaddr;
-    offset += snprintf(buf + offset, sizeof(buf) - offset, "giaddr = %s\n", inet_ntop(addr));
-    printf("print_dhcp_header 6\n");
+    inet_ntop(AF_INET, &addr, ip_str, INET_ADDRSTRLEN);
+    offset += snprintf(buf + offset, sizeof(buf) - offset, "giaddr = %s\n", ip_str);
     // chaddr
     offset += snprintf(buf + offset, sizeof(buf) - offset, "chaddr = ");
     for (int i = 0; i < packet->hlen; ++i)
@@ -172,13 +175,18 @@ void print_dhcp_header(struct dhcp_packet *packet)
         }
     }
     offset += snprintf(buf + offset, sizeof(buf) - offset, "\n");
-    printf("print_dhcp_header 7\n");
     printf("%s", buf);
-    printf("print_dhcp_header 8\n");
 }
 
 
 void print_dhcp_options(struct option_list *list)
 {
-    
+    for (int i = 0; i < list->len; i++)
+    {
+        printf("code = %u\n", list->header[i].code);
+        if (list->header[i].code == OC_MESSAGE_TYPE)
+        {
+            printf("message type code = %u\n", list->header[i].value[0]);
+        }       
+    }
 }

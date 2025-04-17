@@ -94,7 +94,9 @@ enum option_code{
     OC_MESSAGE = 56,
     OC_MAX_MESSAGE_SIZE = 57,
     OC_RENEWAL_TIME = 58,
-    OC_REBINDING_TIME = 59
+    OC_REBINDING_TIME = 59,
+    oC_CLIENT_ID = 61
+    // TODO: Option 1, 28, 3, 15, 6
     // TODO: Option 61 (client identifier)
 };
 

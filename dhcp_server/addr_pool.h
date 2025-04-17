@@ -9,7 +9,6 @@
 #include <netinet/in.h>
 #include <pthread.h>
 
-// TODO: unify host byte order and network byte order
 struct binding
 {
     uint32_t ip;    // host byte order
@@ -27,17 +26,16 @@ struct addr_pool
 
     // binding pool
     struct binding *bindings;
-    // TODO: terminate expire_thread
     pthread_t expire_thread;    // check expiration time
-    pthread_mutex_t bindings_lock // do we need a more fine-grained lock?
 };
 
 struct addr_pool* init_addr_pool(const char *start, const char * end, uint32_t size);
 
 void release_addr_pool(struct addr_pool *pool);
 
-struct binding* get_binding_with_ip(struct addr_pool *pool, uint8_t status, uint8_t c_mac[6]);
+struct binding* get_binding_with_mac(struct addr_pool *pool, uint8_t status, uint8_t c_mac[6]);
 struct binding* offer_ip(struct addr_pool *pool, const uint8_t c_mac[6]);
+void cancel_offer(struct addr_pool *pool, const uint8_t c_mac[6]);
 struct binding* allocate_ip(struct addr_pool *pool, uint32_t y_ip, const uint8_t c_mac[6], uint32_t l_time);
 
 

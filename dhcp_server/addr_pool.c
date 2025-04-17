@@ -8,7 +8,6 @@ void* check_expiration(void *arg){
     {
         time_t current_time = time(NULL);
 
-        pthread_mutex_lock(&pool->bindings_lock);
         for (uint32_t i = 0; i < pool->pool_size; ++i)
         {
             struct binding *b = &(pool->bindings[i]);
@@ -20,8 +19,7 @@ void* check_expiration(void *arg){
                 }
             }
         }
-        pthread_mutex_unlock(&pool->bindings_lock);
-
+        
         sleep(10);
     }
 }
@@ -39,15 +37,15 @@ struct addr_pool* init_addr_pool(const char *start, const char * end, uint32_t s
     {
         pool->bindings[i].ip = pool->start_ip+i;
         pool->bindings[i].is_leased = 0;
+        memset(pool->bindings[i].mac, 0, 6);
     }
-    pthread_mutex_init(&pool->bindings_lock, NULL);
     pthread_create(&pool->expire_thread, NULL, check_expiration, pool);
     return pool;
 }
 
 // mutex lock on bindings need to be aquired before calling this function
 // `status` parameter refers to `is_leased` in `struct binding` 
-struct binding* get_binding_with_ip(struct addr_pool *pool, uint8_t status, uint8_t c_mac[6]){
+struct binding* get_binding_with_mac(struct addr_pool *pool, uint8_t status, uint8_t c_mac[6]){
     for (int i = 0; i < pool->pool_size; i++)
     {
         if (pool->bindings[i].is_leased == status && memcmp(pool->bindings[i].mac, c_mac, 6) == 0)
@@ -61,9 +59,8 @@ struct binding* get_binding_with_ip(struct addr_pool *pool, uint8_t status, uint
 struct binding* offer_ip(struct addr_pool *pool, const uint8_t c_mac[6]){
     int offered_n = -1;
 
-    pthread_mutex_lock(&pool->bindings_lock);
     // check whether an IP is already allocated to the MAC address
-    if (get_binding_with_ip(pool, 1, c_mac) != NULL)
+    if (get_binding_with_mac(pool, 1, c_mac) != NULL)
     {
         // TODO: How to deal with this situation?
     }
@@ -72,62 +69,64 @@ struct binding* offer_ip(struct addr_pool *pool, const uint8_t c_mac[6]){
         if (pool->bindings[i].is_leased == 2 && offered_n == -1) offered_n = i;
         else if (pool->bindings[i].is_leased == 0)
         {
-            pthread_mutex_unlock(&pool->bindings_lock);
+            pool->bindings[i].is_leased = 2;
+            memcpy(pool->bindings[i].mac, c_mac, 6);
             return &pool->bindings[i];
         }
     }
-    pthread_mutex_unlock(&pool->bindings_lock);
-    if (offered_n == -1) return NULL;
+    if (offered_n == -1) {
+        return NULL;
+    }
+    pool->bindings[offered_n].is_leased = 2;
+    memcpy(pool->bindings[offered_n].mac, c_mac, 6);
     return &pool->bindings[offered_n];
 }
 
 void cancel_offer(struct addr_pool *pool, const uint8_t c_mac[6]){
-    pthread_mutex_lock(&pool->bindings_lock);
     for (int i = 0; i < pool->pool_size; i++)
     {
         if (pool->bindings[i].is_leased == 2 && memcmp(pool->bindings[i].mac, c_mac, 6) == 0)
         {
             pool->bindings[i].is_leased = 0;
+            memcpy(pool->bindings[i].mac, 0, 6);
         }
     }
-    pthread_mutex_unlock(&pool->bindings_lock);
 }
 
 struct binding* allocate_ip(struct addr_pool *pool, uint32_t y_ip, const uint8_t c_mac[6], uint32_t l_time){
-    pthread_mutex_lock(&pool->bindings_lock);
     for (int i = 0; i < pool->pool_size; i++)
     {
-        if (ntohl(y_ip) == pool->bindings[i].ip && pool->bindings[i].is_leased != 1)
+        if (memcmp(c_mac, pool->bindings[i].mac, 6) == 0) {
+            printf("allocate_ip hit0\n");
+        }
+        if (y_ip == pool->bindings[i].ip && memcmp(c_mac, pool->bindings[i].mac, 6) == 0) {
+            printf("allocate_ip hit1\n");
+        }
+        if (y_ip == pool->bindings[i].ip && pool->bindings[i].is_leased == 2 && memcmp(c_mac, pool->bindings[i].mac, 6) == 0)
         {
-            memcpy(pool->bindings[i].mac, c_mac, 6);
+            printf("allocate_ip hit2\n");
             pool->bindings[i].start_time = time(NULL);
             pool->bindings[i].lease_time = l_time;
             pool->bindings[i].is_leased = 1;
-            pthread_mutex_unlock(&pool->bindings_lock);
             return &pool->bindings[i];
         }
     }
-    pthread_mutex_unlock(&pool->bindings_lock);
     return NULL;
 }
 
 struct binding* release_ip(struct addr_pool *pool, uint32_t y_ip, const uint8_t c_mac[6]){
-    pthread_mutex_lock(&pool->bindings_lock);
     for (int i = 0; i < pool->pool_size; i++)
     {
         if (ntohl(y_ip) == pool->bindings[i].ip && pool->bindings[i].is_leased == 1 
             && memcmp(pool->bindings[i].mac, c_mac, 6))
         {
             pool->bindings[i].is_leased = 0;
-            pthread_mutex_unlock(&pool->bindings_lock);
             return &pool->bindings[i];
         }
     }
-    pthread_mutex_unlock(&pool->bindings_lock);
     return NULL;
 }
 
-// TODO: consider whether we need a mutex lock on `bindings` or not
 
 void release_addr_pool(struct addr_pool *pool){
     free(pool->bindings);
