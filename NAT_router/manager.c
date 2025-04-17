@@ -8,10 +8,16 @@
 #define SERVER_PORT 9999
 #define BUFFER_SIZE 16384
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s PRINT_NAT_TABLE|RESET_NAT_TABLE\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+    char *message = argv[1];
+
+
     int sockfd;
     struct sockaddr_in server_addr;
-    char *message = "PRINT_NAT_TABLE";
     char recv_buf[BUFFER_SIZE];
     socklen_t addr_len = sizeof(server_addr);
 
@@ -30,12 +36,12 @@ int main() {
     }
 
     if (sendto(sockfd, message, strlen(message), 0, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Failed to send PRINT_NAT_TABLE request");
+        perror("Failed to send request");
         close(sockfd);
         exit(EXIT_FAILURE);
     }
 
-    printf("Sent PRINT_NAT_TABLE request to NAT router admin server.\n");
+    printf("Sent %s request to NAT router admin server.\n", message);
 
     // Wait for the response (blocking call)
     int n = recvfrom(sockfd, recv_buf, sizeof(recv_buf) - 1, 0, NULL, NULL);
@@ -45,7 +51,15 @@ int main() {
         exit(EXIT_FAILURE);
     }
     recv_buf[n] = '\0';
-    printf("NAT Table received:\n%s\n", recv_buf);
+
+	if (strcmp(message, "PRINT_NAT_TABLE") == 0) {
+		printf("NAT Table received:\n%s\n", recv_buf);
+	} else if (strcmp(message, "RESET_NAT_TABLE") == 0) {
+		printf("NAT Table reset confirmation received:\n%s\n", recv_buf);
+	} else {
+		printf("Unknown command: %s\n", message);
+		printf("Response: %s\n", recv_buf);
+	}
 
     close(sockfd);
     return 0;

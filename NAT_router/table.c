@@ -252,3 +252,33 @@ void get_nat_table_string(char *buf, size_t bufsize) {
     snprintf(buf + offset, bufsize - offset, "--------------------------------------------------------------------------------\n");
 }
 
+// Clear all NAT entries and reset the table
+void nat_reset() {
+    // Acquire write locks on both tables
+    pthread_rwlock_wrlock(&nat_internal_rwlock);
+    pthread_rwlock_wrlock(&nat_external_rwlock);
+
+    // Free all entries in the internal table
+    for (int i = 0; i < NAT_TABLE_SIZE; i++) {
+        struct nat_entry *e = nat_internal[i];
+        while (e) {
+            struct nat_entry *next = e->int_next;
+            free(e);
+            e = next;
+        }
+        nat_internal[i] = NULL;
+    }
+
+    // Clear all entries in the external table (pointers already freed)
+    for (int i = 0; i < NAT_TABLE_SIZE; i++) {
+        nat_external[i] = NULL;
+    }
+
+    // Reset entry count
+    entry_count = 0;
+
+    // Release locks
+    pthread_rwlock_unlock(&nat_external_rwlock);
+    pthread_rwlock_unlock(&nat_internal_rwlock);
+}
+

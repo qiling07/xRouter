@@ -47,6 +47,7 @@ struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reve
 int is_ext_port_taken(uint16_t ext_port, uint8_t proto);
 struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint8_t proto);
 void nat_gc();
+void nat_reset();
 
 void print_nat_table();
 void get_nat_table_string(char *buf, size_t bufsize);

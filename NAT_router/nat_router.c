@@ -85,6 +85,16 @@ void *admin_thread_func(void *arg) {
                 perror("Admin thread: sendto failed");
             }
         }
+        else if (strcmp(admin_buf, "RESET_NAT_TABLE") == 0) {
+            // Reset the NAT table
+            nat_reset();
+            // Send acknowledgment back to client
+            const char *reset_msg = "NAT table has been reset";
+            if (sendto(admin_fd, reset_msg, strlen(reset_msg), 0,
+                       (struct sockaddr *)&client_addr, client_addr_len) < 0) {
+                perror("Admin thread: sendto failed");
+            }
+        }
     }
 
     close(admin_fd);
@@ -226,7 +236,7 @@ void* internal_thread_func(void *arg) {
         pthread_attr_destroy(&attr);
     }
     
-    pclose(raw_int);
+    close(raw_int);
     return NULL;
 }
 
@@ -359,7 +369,7 @@ void* external_thread_func(void *arg) {
         pthread_attr_destroy(&attr);
     }
 
-    pclose(raw_ext);
+    close(raw_ext);
     return NULL;
 }
 
