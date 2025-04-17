@@ -322,29 +322,29 @@ int is_host_address(uint32_t ip, interface_info *info) {
     uint32_t mask = ntohl(info->netmask.s_addr);
     uint32_t broadcast = ntohl(info->broadcast.s_addr);
 
-    printf("DEBUG: is_host_address() called with: ip=0x%08x, gateway_ip=0x%08x, mask=0x%08x, broadcast=0x%08x\n", ip, gateway_ip, mask, broadcast);
+    // printf("DEBUG: is_host_address() called with: ip=0x%08x, gateway_ip=0x%08x, mask=0x%08x, broadcast=0x%08x\n", ip, gateway_ip, mask, broadcast);
 
     if ((ip & mask) != (gateway_ip & mask)) {
-        printf("DEBUG: ip & mask (0x%08x) != gateway_ip & mask (0x%08x), returning 0\n", ip & mask, gateway_ip & mask);
+        // printf("DEBUG: ip & mask (0x%08x) != gateway_ip & mask (0x%08x), returning 0\n", ip & mask, gateway_ip & mask);
         return 0;
     }
 
     if (ip == gateway_ip) {
-        printf("DEBUG: ip equals gateway_ip (0x%08x), returning 0\n", gateway_ip);
+        // printf("DEBUG: ip equals gateway_ip (0x%08x), returning 0\n", gateway_ip);
         return 0;
     }
 
     if (ip == (gateway_ip & mask)) {
-        printf("DEBUG: ip equals network address (gateway_ip & mask = 0x%08x), returning 0\n", (gateway_ip & mask));
+        // printf("DEBUG: ip equals network address (gateway_ip & mask = 0x%08x), returning 0\n", (gateway_ip & mask));
         return 0;
     }
 
     if (broadcast != 0 && ip == broadcast) {
-        printf("DEBUG: ip equals broadcast (0x%08x), returning 0\n", broadcast);
+        // printf("DEBUG: ip equals broadcast (0x%08x), returning 0\n", broadcast);
         return 0;
     }
 
-    printf("DEBUG: ip is a valid host address, returning 1\n");
+    // printf("DEBUG: ip is a valid host address, returning 1\n");
     return 1;
 }
 

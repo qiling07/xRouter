@@ -41,6 +41,8 @@ struct nat_entry {
 extern struct nat_entry *nat_internal[NAT_TABLE_SIZE];
 extern struct nat_entry *nat_external[NAT_TABLE_SIZE];
 
+extern size_t entry_count;
+
 struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reverse);
 int is_ext_port_taken(uint16_t ext_port, uint8_t proto);
 struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint8_t proto);

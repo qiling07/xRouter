@@ -35,10 +35,9 @@
 
 
 volatile sig_atomic_t running = 1;
-
 interface_info int_if_info, ext_if_info;
-int raw_int = -1, raw_ext = -1;
-
+int outward_sock = -1;
+int inward_sock = -1;
 
 /* Admin thread function to handle NAT table requests via UDP */
 void *admin_thread_func(void *arg) {
@@ -155,23 +154,11 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
         ((struct icmphdr *)l4)->checksum = checksum(l4, l4len);
     }
 
-    int ip_sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
-    if (ip_sock < 0) { perror("socket"); exit(1); }
-    int on = 1;
-    if (setsockopt(ip_sock, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0) {
-        perror("setsockopt IP_HDRINCL");
-        exit(1);
-    }
-    if (setsockopt(ip_sock, SOL_SOCKET, SO_BINDTODEVICE,
-        ext_if_info.name, strlen(ext_if_info.name)) < 0) {
-        perror("bind to device");
-    }
-
     struct sockaddr_in dst = {
         .sin_family = AF_INET,
         .sin_addr  = ip->ip_dst,
     };
-    ssize_t ret = sendto(ip_sock,
+    ssize_t ret = sendto(outward_sock,
                          (void*)ip,
                          ntohs(ip->ip_len),
                          0,
@@ -181,9 +168,9 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
         if (errno == EMSGSIZE) {
             int mtu = ext_if_info.mtu;
             if (ip->ip_off & htons(IP_DF)) {
-                send_icmp_frag_needed(ip_sock, ip, dst, mtu);
+                send_icmp_frag_needed(outward_sock, ip, dst, mtu);
             } else {
-                fragment_and_send(ip_sock, ip, dst, mtu);
+                fragment_and_send(outward_sock, ip, dst, mtu);
             }
         } else {
             perror("raw sendto");
@@ -204,6 +191,10 @@ void* packet_worker_func_internal(void *arg) {
 }
 
 void* internal_thread_func(void *arg) {
+    int raw_int = create_raw(int_if_info.name);
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+    setsockopt(raw_int, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     unsigned char buf[BUF_SZ];
     while (running) {
         ssize_t n = recv(raw_int, buf, BUF_SZ, 0);
@@ -234,6 +225,8 @@ void* internal_thread_func(void *arg) {
         }
         pthread_attr_destroy(&attr);
     }
+    
+    pclose(raw_int);
     return NULL;
 }
 
@@ -301,23 +294,11 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
         ((struct icmphdr *)l4)->checksum = checksum(l4, l4len);
     }
 
-    int ip_sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
-    if (ip_sock < 0) { perror("socket"); exit(1); }
-    int on = 1;
-    if (setsockopt(ip_sock, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0) {
-        perror("setsockopt IP_HDRINCL");
-        exit(1);
-    }
-    if (setsockopt(ip_sock, SOL_SOCKET, SO_BINDTODEVICE,
-        int_if_info.name, strlen(int_if_info.name)) < 0) {
-        perror("bind to device");
-    }
-
     struct sockaddr_in dst = {
         .sin_family = AF_INET,
         .sin_addr  = ip->ip_dst,
     };
-    ssize_t ret = sendto(ip_sock,
+    ssize_t ret = sendto(inward_sock,
                          (void*)ip,
                          ntohs(ip->ip_len),
                          0,
@@ -327,9 +308,9 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
         if (errno == EMSGSIZE) {
             int mtu = int_if_info.mtu;
             if (ip->ip_off & htons(IP_DF)) {
-                send_icmp_frag_needed(ip_sock, ip, dst, mtu);
+                send_icmp_frag_needed(inward_sock, ip, dst, mtu);
             } else {
-                fragment_and_send(ip_sock, ip, dst, mtu);
+                fragment_and_send(inward_sock, ip, dst, mtu);
             }
         } else {
             perror("raw sendto");
@@ -347,6 +328,10 @@ void* packet_worker_func_external(void *arg) {
 }
 
 void* external_thread_func(void *arg) {
+    int raw_ext = create_raw(ext_if_info.name);
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+    setsockopt(raw_ext, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     unsigned char buf[BUF_SZ];
     while (running) {
         ssize_t n = recv(raw_ext, buf, BUF_SZ, 0);
@@ -373,6 +358,8 @@ void* external_thread_func(void *arg) {
         }
         pthread_attr_destroy(&attr);
     }
+
+    pclose(raw_ext);
     return NULL;
 }
 
@@ -396,12 +383,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     srand(time(NULL));
-    
-    raw_int = create_raw(argv[1]);
-    raw_ext = create_raw(argv[2]);
-    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-    setsockopt(raw_int, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(raw_ext, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     signal(SIGINT, cleanup);
     signal(SIGTERM, cleanup);
@@ -427,6 +408,34 @@ int main(int argc, char *argv[]) {
         printf("External MAC: %s\n", ext_if_info.hw_addr_str);
         printf("External netmask: %s\n", inet_ntoa(ext_if_info.netmask));
         printf("External broadcast: %s\n", inet_ntoa(ext_if_info.broadcast));
+    }
+
+    outward_sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+    {
+        if (outward_sock < 0) { perror("socket"); exit(1); }
+        int on = 1;
+        if (setsockopt(outward_sock, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0) {
+            perror("setsockopt IP_HDRINCL");
+            exit(1);
+        }
+        if (setsockopt(outward_sock, SOL_SOCKET, SO_BINDTODEVICE,
+            ext_if_info.name, strlen(ext_if_info.name)) < 0) {
+            perror("bind to device");
+        }
+    }
+
+    inward_sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+    {
+        if (inward_sock < 0) { perror("socket"); exit(1); }
+        int on = 1;
+        if (setsockopt(inward_sock, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0) {
+            perror("setsockopt IP_HDRINCL");
+            exit(1);
+        }
+        if (setsockopt(inward_sock, SOL_SOCKET, SO_BINDTODEVICE,
+            int_if_info.name, strlen(int_if_info.name)) < 0) {
+            perror("bind to device");
+        }
     }
 
     pthread_t internal_thread, external_thread, gc_thread, admin_thread;
@@ -462,11 +471,6 @@ int main(int argc, char *argv[]) {
     pthread_join(external_thread, NULL);
     pthread_join(gc_thread, NULL);
 
-
-    if (raw_int != -1)
-        close(raw_int);
-    if (raw_ext != -1)
-        close(raw_ext);
     puts("\n[+] NAT stopped.");
 
     return 0;

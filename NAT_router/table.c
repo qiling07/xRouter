@@ -7,6 +7,8 @@ struct nat_entry *nat_external[NAT_TABLE_SIZE] = {0};
 pthread_rwlock_t nat_internal_rwlock = PTHREAD_RWLOCK_INITIALIZER;  // Initialize the lock
 pthread_rwlock_t nat_external_rwlock = PTHREAD_RWLOCK_INITIALIZER;  // Initialize the lock
 
+size_t entry_count = 0;
+
 
 static inline unsigned hash_internal(uint32_t ip, uint16_t port, uint8_t proto) {
     return ((ip ^ port ^ proto) % NAT_TABLE_SIZE);
@@ -70,6 +72,8 @@ struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if
     pthread_rwlock_wrlock(&nat_internal_rwlock);
     pthread_rwlock_wrlock(&nat_external_rwlock);
 
+    entry_count++;
+
     if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
         uint16_t port;
         do {
@@ -99,6 +103,8 @@ struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if
 static void nat_remove(struct nat_entry *e) {
     pthread_rwlock_wrlock(&nat_internal_rwlock);
     pthread_rwlock_wrlock(&nat_external_rwlock);
+
+    entry_count--;
 
     // Remove from internal hash table\n
     unsigned i_idx = hash_internal(e->int_ip, e->int_port, e->proto);
@@ -135,6 +141,7 @@ void nat_gc() {
         struct nat_entry **pp = &nat_internal[i];
         while (*pp) {
             if (now - (*pp)->ts > NAT_TTL) {
+                entry_count--;
                 struct nat_entry *old = *pp;
                 *pp = old->int_next;
                 // Remove from external hash table\n
