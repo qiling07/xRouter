@@ -159,6 +159,10 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
         hdr_add = sizeof(struct icmphdr);
         icmp->checksum = 0;
     }
+
+    size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
+    if (filter_should_drop(ip->ip_p, l4, l4len))
+        return;
     
     struct nat_entry *e = nat_lookup(ip->ip_src.s_addr, id_or_port, ip->ip_p, 0);
     if (!e) {
