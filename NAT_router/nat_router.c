@@ -86,8 +86,36 @@ void *admin_thread_func(void *arg) {
                 perror("Admin thread: sendto failed");
             }
         }
+        else if (strncmp(admin_buf, "ADD_FILTER ", 11) == 0) {
+            char *domain = admin_buf + 11;
+            int r = filter_add(domain);
+            const char *resp = (r == 0)
+                ? "ADD_FILTER OK\n"
+                : "ADD_FILTER FAILED\n";
+            sendto(admin_fd, resp, strlen(resp), 0,
+                (struct sockaddr*)&client_addr, client_addr_len);
+        }
+        else if (strncmp(admin_buf, "DEL_FILTER ", 11) == 0) {
+            char *domain = admin_buf + 11;
+            int r = filter_del(domain);
+            const char *resp = (r == 0)
+                ? "DEL_FILTER OK\n"
+                : "DEL_FILTER FAILED\n";
+            sendto(admin_fd, resp, strlen(resp), 0,
+                (struct sockaddr*)&client_addr, client_addr_len);
+        }
+        else if (strcmp(admin_buf, "SHOW_FILTERS") == 0) {
+            char listbuf[16384];
+            filter_list_str(listbuf, sizeof(listbuf));
+            sendto(admin_fd, listbuf, strlen(listbuf), 0,
+                (struct sockaddr*)&client_addr, client_addr_len);
+        }
+        else {
+            const char *resp = "UNKNOWN COMMAND\n";
+            sendto(admin_fd, resp, strlen(resp), 0,
+                (struct sockaddr*)&client_addr, client_addr_len);
+        }
     }
-
     close(admin_fd);
     pthread_exit(NULL);
 }
