@@ -187,10 +187,6 @@
          const struct tcphdr *t = l4;
          uint16_t dport = ntohs(t->dest);
          size_t hdrlen = t->doff * 4;
-         // Drop HTTP SYN immediately
-         if (t->syn && !t->ack && dport == 80) {
-             return 1;
-         }
          const unsigned char *payload = (const unsigned char*)l4 + hdrlen;
          size_t payload_len = l4len - hdrlen;
          if (dport == 80 && filter_check_http(payload, payload_len)) {
