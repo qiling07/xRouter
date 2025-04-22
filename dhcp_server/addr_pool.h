@@ -37,8 +37,7 @@ struct binding* get_binding_with_mac(struct addr_pool *pool, uint8_t status, uin
 struct binding* offer_ip(struct addr_pool *pool, const uint8_t c_mac[6]);
 void cancel_offer(struct addr_pool *pool, const uint8_t c_mac[6]);
 struct binding* allocate_ip(struct addr_pool *pool, uint32_t y_ip, const uint8_t c_mac[6], uint32_t l_time);
-
-
+struct binding* release_ip(struct addr_pool *pool, uint32_t y_ip, const uint8_t c_mac[6]);
 
 
 #endif

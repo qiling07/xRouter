@@ -96,15 +96,8 @@ void cancel_offer(struct addr_pool *pool, const uint8_t c_mac[6]){
 struct binding* allocate_ip(struct addr_pool *pool, uint32_t y_ip, const uint8_t c_mac[6], uint32_t l_time){
     for (int i = 0; i < pool->pool_size; i++)
     {
-        if (memcmp(c_mac, pool->bindings[i].mac, 6) == 0) {
-            printf("allocate_ip hit0\n");
-        }
-        if (y_ip == pool->bindings[i].ip && memcmp(c_mac, pool->bindings[i].mac, 6) == 0) {
-            printf("allocate_ip hit1\n");
-        }
         if (y_ip == pool->bindings[i].ip && pool->bindings[i].is_leased == 2 && memcmp(c_mac, pool->bindings[i].mac, 6) == 0)
         {
-            printf("allocate_ip hit2\n");
             pool->bindings[i].start_time = time(NULL);
             pool->bindings[i].lease_time = l_time;
             pool->bindings[i].is_leased = 1;
@@ -117,8 +110,8 @@ struct binding* allocate_ip(struct addr_pool *pool, uint32_t y_ip, const uint8_t
 struct binding* release_ip(struct addr_pool *pool, uint32_t y_ip, const uint8_t c_mac[6]){
     for (int i = 0; i < pool->pool_size; i++)
     {
-        if (ntohl(y_ip) == pool->bindings[i].ip && pool->bindings[i].is_leased == 1 
-            && memcmp(pool->bindings[i].mac, c_mac, 6))
+        if (y_ip == pool->bindings[i].ip && pool->bindings[i].is_leased == 1 
+            && memcmp(pool->bindings[i].mac, c_mac, 6) == 0)
         {
             pool->bindings[i].is_leased = 0;
             return &pool->bindings[i];

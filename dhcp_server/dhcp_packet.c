@@ -183,10 +183,15 @@ void print_dhcp_options(struct option_list *list)
 {
     for (int i = 0; i < list->len; i++)
     {
-        printf("code = %u\n", list->header[i].code);
-        if (list->header[i].code == OC_MESSAGE_TYPE)
+        printf("option code = %u\n", list->header[i].code);
+        // if (list->header[i].code == OC_MESSAGE_TYPE)
+        // {
+        //     printf("message type code = %u\n", list->header[i].value[0]);
+        // }
+        for (int ofst = 0; ofst < list->header[i].len; ++ofst)
         {
-            printf("message type code = %u\n", list->header[i].value[0]);
-        }       
+            printf("0x%02X ", list->header[i].value[ofst]);
+        }
+        printf("\n");
     }
 }

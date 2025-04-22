@@ -46,6 +46,36 @@ void process_dhcp_discover(struct dhcp_server *server, struct dhcp_packet *packe
         printf("option %d\n", parameters_tlv->value[i]);
         switch (parameters_tlv->value[i])
         {
+        case OC_SUBNET_MASK:
+            reply->options[options_ofst++] = parameters_tlv->value[i];
+            reply->options[options_ofst++] = 4;
+            inet_pton(AF_INET, server->conf.netmask, &(reply->options[options_ofst]));
+            options_ofst += 4;
+            break;
+        case OC_BROADCAST_ADDR:
+            reply->options[options_ofst++] = parameters_tlv->value[i];
+            reply->options[options_ofst++] = 4;
+            inet_pton(AF_INET, server->conf.broadcast, &(reply->options[options_ofst]));
+            options_ofst += 4;
+            break;
+        case OC_ROUTER:
+            reply->options[options_ofst++] = parameters_tlv->value[i];
+            reply->options[options_ofst++] = 4;
+            inet_pton(AF_INET, server->conf.gateway, &(reply->options[options_ofst]));
+            options_ofst += 4;
+            break;
+        case OC_DOMAIN_NAME:
+            reply->options[options_ofst++] = parameters_tlv->value[i];
+            reply->options[options_ofst++] = strlen(server->conf.domain_name);
+            memcpy(&reply->options[options_ofst], server->conf.domain_name, strlen(server->conf.domain_name));
+            options_ofst += strlen(server->conf.domain_name);
+            break;
+        case OC_DNS:
+            reply->options[options_ofst++] = parameters_tlv->value[i];
+            reply->options[options_ofst++] = 4;
+            inet_pton(AF_INET, server->conf.dns_ip, &(reply->options[options_ofst]));
+            options_ofst += 4;
+            break;
         case OC_LEASE_TIME:
             reply->options[options_ofst++] = parameters_tlv->value[i];
             reply->options[options_ofst++] = 4;
@@ -121,6 +151,66 @@ void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet
             reply->options[options_ofst++] = 4;
             inet_pton(AF_INET, server->conf.ip, &(reply->options[options_ofst]));
             options_ofst += 4;
+            // TODO: refactor code
+            struct option_tlv *parameters_tlv = get_option_tlv(options, OC_PARAMETER_LIST);
+            for (int i = 0; i < parameters_tlv->len; ++i)
+            {
+                // reply->options[options_ofst++] = parameters_tlv->value[i];
+                printf("option %d\n", parameters_tlv->value[i]);
+                switch (parameters_tlv->value[i])
+                {
+                case OC_SUBNET_MASK:
+                    reply->options[options_ofst++] = parameters_tlv->value[i];
+                    reply->options[options_ofst++] = 4;
+                    inet_pton(AF_INET, server->conf.netmask, &(reply->options[options_ofst]));
+                    options_ofst += 4;
+                    break;
+                case OC_BROADCAST_ADDR:
+                    reply->options[options_ofst++] = parameters_tlv->value[i];
+                    reply->options[options_ofst++] = 4;
+                    inet_pton(AF_INET, server->conf.broadcast, &(reply->options[options_ofst]));
+                    options_ofst += 4;
+                    break;
+                case OC_ROUTER:
+                    reply->options[options_ofst++] = parameters_tlv->value[i];
+                    reply->options[options_ofst++] = 4;
+                    inet_pton(AF_INET, server->conf.gateway, &(reply->options[options_ofst]));
+                    options_ofst += 4;
+                    break;
+                case OC_DOMAIN_NAME:
+                    reply->options[options_ofst++] = parameters_tlv->value[i];
+                    reply->options[options_ofst++] = strlen(server->conf.domain_name);
+                    memcpy(&reply->options[options_ofst], server->conf.domain_name, strlen(server->conf.domain_name));
+                    options_ofst += strlen(server->conf.domain_name);
+                    break;
+                case OC_DNS:
+                    reply->options[options_ofst++] = parameters_tlv->value[i];
+                    reply->options[options_ofst++] = 4;
+                    inet_pton(AF_INET, server->conf.dns_ip, &(reply->options[options_ofst]));
+                    options_ofst += 4;
+                    break;
+                case OC_LEASE_TIME:
+                    reply->options[options_ofst++] = parameters_tlv->value[i];
+                    reply->options[options_ofst++] = 4;
+                    memcpy(&reply->options[options_ofst], &server->conf.lease_time, 4);
+                    options_ofst += 4;
+                    break;
+                case OC_RENEWAL_TIME:
+                    reply->options[options_ofst++] = parameters_tlv->value[i];
+                    reply->options[options_ofst++] = 4;
+                    memcpy(&reply->options[options_ofst], &server->conf.renew_time, 4);
+                    options_ofst += 4;
+                    break;
+                case OC_REBINDING_TIME:
+                    reply->options[options_ofst++] = parameters_tlv->value[i];
+                    reply->options[options_ofst++] = 4;
+                    memcpy(&reply->options[options_ofst], &server->conf.rebinding_time, 4);
+                    options_ofst += 4;
+                    break;
+                default:
+                    break;
+                }
+            }
             reply->options[options_ofst++] = OC_END;
             // send reply
             *len = DHCP_HEADER_SIZE + options_ofst;
@@ -129,8 +219,6 @@ void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet
             perror("unsupported chaddr type\n");
             exit(-1);
         }
-        
-
     }
     else{
         // is not selected
@@ -150,8 +238,32 @@ void process_dhcp_decline(){
     printf("Haven't implemented yet\n");
 }
 
-void process_dhcp_release(){
-    printf("Haven't implemented yet\n");
+void process_dhcp_release(struct dhcp_server *server, uint32_t client_ip, struct dhcp_packet *packet, struct option_list *options){
+    // verify OC_SERVER_ID
+    struct option_tlv *server_id_tlv = get_option_tlv(options, OC_SERVER_ID);
+    uint32_t server_id_no;
+    memcpy(&server_id_no, server_id_tlv->value, server_id_tlv->len);
+    uint32_t server_ip_no;
+    inet_pton(AF_INET, server->conf.ip, &server_ip_no);
+    if (server_id_no != server_ip_no)
+    {
+        printf("OC_SERVER_ID does not match with the server ip\n");
+        return;
+    }
+    // verify client_ip and ciaddr
+    uint32_t ciaddr_ho = ntohl(packet->ciaddr);
+    if (ciaddr_ho != client_ip)
+    {
+        printf("invalid ciaddr in the DHCP_RELEASE packet\n");
+        return;
+    }
+    struct binding* released_b = release_ip(server->pool, ciaddr_ho, packet->chaddr);
+    if (released_b == NULL)
+    {
+        printf("No matched lease in the leasing pool\n");
+        return;
+    }
+    printf("Successfully released the lease\n");
 }
 
 void process_dhcp_inform(){
@@ -224,6 +336,7 @@ int main(int argc, char *argv[]){
         if (packet->op == OP_BOOTREQUEST)
         {
             struct option_list op_list = parse_options(packet->options, request_len - DHCP_HEADER_SIZE);
+            print_dhcp_options(&op_list);
             uint16_t message_type = get_message_type(&op_list);
 
             struct dhcp_packet reply_packet;
@@ -259,7 +372,8 @@ int main(int argc, char *argv[]){
                 process_dhcp_decline();
                 break;
             case MTC_DHCPRELEASE:
-                process_dhcp_release();
+                uint32_t client_ip = ntohl(addr_c.sin_addr.s_addr);
+                process_dhcp_release(server, client_ip, packet, &op_list);
                 break;
             case MTC_DHCPINFORM:
                 process_dhcp_inform();

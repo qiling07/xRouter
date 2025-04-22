@@ -84,6 +84,8 @@ enum option_code{
     OC_SUBNET_MASK = 1,
     OC_ROUTER = 3,
     OC_DNS = 6,
+    OC_DOMAIN_NAME = 15,
+    OC_BROADCAST_ADDR = 28,
     // DHCP Extensions
     OC_REQUESTED_IP = 50,
     OC_LEASE_TIME = 51,
@@ -96,7 +98,7 @@ enum option_code{
     OC_RENEWAL_TIME = 58,
     OC_REBINDING_TIME = 59,
     oC_CLIENT_ID = 61
-    // TODO: Option 1, 28, 3, 15, 6
+    // TODO: Option 6
     // TODO: Option 61 (client identifier)
 };
 

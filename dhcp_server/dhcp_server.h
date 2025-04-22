@@ -21,6 +21,7 @@ struct dhcp_conf{
     char *netmask;
     char *broadcast;
     char *dns_ip;
+    char *domain_name;
     // address pool
     char *start_ip;
     char *end_ip;
@@ -55,6 +56,7 @@ void release_dhcp_server(struct dhcp_server* server){
     free(server->conf.netmask);
     free(server->conf.broadcast);
     free(server->conf.dns_ip);
+    free(server->conf.domain_name);
     free(server->conf.start_ip);
     free(server->conf.end_ip);
     
@@ -72,6 +74,7 @@ void parse_dhcp_conf(struct dhcp_conf *conf){
     conf->netmask = strdup("255.255.255.0");
     conf->broadcast = strdup("192.168.20.255");
     conf->dns_ip = strdup("8.8.8.8");
+    conf->domain_name = strdup("router.vm");
     conf->start_ip = strdup("192.168.20.101");
     conf->end_ip = strdup("192.168.10.200");
     conf->pool_size = 100;
