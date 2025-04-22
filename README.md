@@ -7,6 +7,20 @@ make
 ./nat_router INTERFACE_INT INTERFACE_EXT
 ```
 
+Router manager client.
+```bash
+gcc -Wall -O2 manager_client.c -o manager_client
+
+./manager_client print
+
+./manager_client add facebook.com
+
+./manager_client del facebook.com
+
+./manager_client show
+```
+
+
 Create a DNS query and send to `8.8.8.8`
 ```bash
 cd DNS_test
@@ -14,7 +28,7 @@ make
 ./udp_dns_test
 ```
 
-HW5. Capture all packets listened.
+Capture all packets listened.
 ```bash
 cd packet_sniffer
 make
