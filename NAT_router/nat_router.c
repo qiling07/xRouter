@@ -30,6 +30,7 @@
 #include "table.h"
 #include "debug_print.h"
 #include "utils.h"
+#include "filter/filter.h"
 #include <net/if.h>
 #include <sys/ioctl.h>
 
@@ -383,6 +384,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     srand(time(NULL));
+    filter_init();
 
     signal(SIGINT, cleanup);
     signal(SIGTERM, cleanup);
