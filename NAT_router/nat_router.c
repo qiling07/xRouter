@@ -30,6 +30,7 @@
 #include "table.h"
 #include "debug_print.h"
 #include "utils.h"
+#include "filter/filter.h"
 #include <net/if.h>
 #include <sys/ioctl.h>
 
@@ -95,8 +96,37 @@ void *admin_thread_func(void *arg) {
                 perror("Admin thread: sendto failed");
             }
         }
+        else if (strncmp(admin_buf, "ADD_FILTER ", 11) == 0) {
+            char *domain = admin_buf + 11;
+            int r = filter_add(domain);
+            const char *resp = (r == 0)
+                ? "ADD_FILTER OK\n"
+                : "ADD_FILTER FAILED\n";
+            sendto(admin_fd, resp, strlen(resp), 0,
+                (struct sockaddr*)&client_addr, client_addr_len);
+        }
+        else if (strncmp(admin_buf, "DEL_FILTER ", 11) == 0) {
+            char *domain = admin_buf + 11;
+            int r = filter_del(domain);
+            const char *resp = (r == 0)
+                ? "DEL_FILTER OK\n"
+                : "DEL_FILTER FAILED\n";
+            sendto(admin_fd, resp, strlen(resp), 0,
+                (struct sockaddr*)&client_addr, client_addr_len);
+        }
+        else if (strcmp(admin_buf, "SHOW_FILTERS") == 0) {
+            char listbuf[16384];
+            memset(listbuf, 0, sizeof(listbuf));
+            filter_list_str(listbuf, sizeof(listbuf));
+            sendto(admin_fd, listbuf, strlen(listbuf), 0,
+                (struct sockaddr*)&client_addr, client_addr_len);
+        }
+        else {
+            const char *resp = "UNKNOWN COMMAND\n";
+            sendto(admin_fd, resp, strlen(resp), 0,
+                (struct sockaddr*)&client_addr, client_addr_len);
+        }
     }
-
     close(admin_fd);
     pthread_exit(NULL);
 }
@@ -139,6 +169,10 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
         hdr_add = sizeof(struct icmphdr);
         icmp->checksum = 0;
     }
+
+    size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
+    if (filter_should_drop(ip->ip_p, l4, l4len))
+        return;
     
     struct nat_entry *e = nat_lookup(ip->ip_src.s_addr, id_or_port, ip->ip_p, 0);
     if (!e) {
@@ -153,7 +187,7 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
     }
     ip->ip_sum = 0;
     ip->ip_sum = checksum(ip, ip->ip_hl * 4);
-    size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
+    // size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
     if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {
         uint16_t cks = l4_checksum(ip, l4, l4len);
         if (ip->ip_p == IPPROTO_TCP)
@@ -393,6 +427,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     srand(time(NULL));
+    filter_init();
 
     signal(SIGINT, cleanup);
     signal(SIGTERM, cleanup);
