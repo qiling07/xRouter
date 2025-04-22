@@ -3,6 +3,8 @@
 #define FILTER_H
 
 #include <pthread.h>
+#include <stdint.h>
+#include <stdlib.h>
 
 #define DOMAIN_MAX_LEN 256
 typedef struct filter_entry {
