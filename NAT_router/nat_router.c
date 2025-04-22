@@ -177,7 +177,7 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
     }
     ip->ip_sum = 0;
     ip->ip_sum = checksum(ip, ip->ip_hl * 4);
-    size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
+    // size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
     if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {
         uint16_t cks = l4_checksum(ip, l4, l4len);
         if (ip->ip_p == IPPROTO_TCP)
