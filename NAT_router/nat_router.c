@@ -106,6 +106,7 @@ void *admin_thread_func(void *arg) {
         }
         else if (strcmp(admin_buf, "SHOW_FILTERS") == 0) {
             char listbuf[16384];
+            memset(listbuf, 0, sizeof(listbuf));
             filter_list_str(listbuf, sizeof(listbuf));
             sendto(admin_fd, listbuf, strlen(listbuf), 0,
                 (struct sockaddr*)&client_addr, client_addr_len);
