@@ -1,15 +1,15 @@
 /**
- * manager.c – 管理 NAT-ROUTER 的管理应用
+ * manager.c – Management tool for the NAT-ROUTER
  *
- * 支持以下命令：
- *   print             —— 打印当前 NAT 转发表 (PRINT_NAT_TABLE)
- *   add <domain>      —— 添加域名过滤规则 (ADD_FILTER <domain>)
- *   del <domain>      —— 删除域名过滤规则 (DEL_FILTER <domain>)
- *   show              —— 显示所有域名过滤规则 (SHOW_FILTERS)
+ * Supports the following commands:
+ *   print             —— Print the current NAT table (PRINT_NAT_TABLE)
+ *   add <domain>      —— Add a domain filter rule (ADD_FILTER <domain>)
+ *   del <domain>      —— Delete a domain filter rule (DEL_FILTER <domain>)
+ *   show              —— Show all domain filter rules (SHOW_FILTERS)
  *
- * 用法：
+ * Usage:
  *   ./manager <command> [domain]
- * 例如：
+ * Examples:
  *   ./manager print
  *   ./manager add example.com
  *   ./manager del facebook.com
@@ -22,12 +22,12 @@
  #include <unistd.h>
  #include <arpa/inet.h>
  
- #define SERVER_IP       "127.0.0.1"   // 如果路由器运行在其它地址，这里改成对应的 IP
+#define SERVER_IP       "127.0.0.1"   // Change to the corresponding IP if the router is running on another address
  #define SERVER_PORT     9999
  #define MAX_BUFFER      16384
  #define CMD_MAX_LEN     512
  
- // 打印使用帮助
+// Print usage help
  static void print_usage(const char *prog) {
      fprintf(stderr,
          "Usage: %s <command> [domain]\n"
@@ -39,20 +39,20 @@
          prog);
  }
  
- // 向路由器 admin 线程发送请求，并打印回复
+// Send request to router's admin thread and print the response
  static int send_request(const char *request) {
      int sockfd, ret;
      struct sockaddr_in srv_addr;
      char recv_buf[MAX_BUFFER];
  
-     // 1. 创建 UDP 套接字
+    // 1. Create UDP socket
      sockfd = socket(AF_INET, SOCK_DGRAM, 0);
      if (sockfd < 0) {
          perror("socket");
          return -1;
      }
  
-     // 2. 准备目标地址
+    // 2. Prepare destination address
      memset(&srv_addr, 0, sizeof(srv_addr));
      srv_addr.sin_family = AF_INET;
      srv_addr.sin_port   = htons(SERVER_PORT);
@@ -62,7 +62,7 @@
          return -1;
      }
  
-     // 3. 发送命令
+    // 3. Send command
      ret = sendto(sockfd,
                   request,
                   strlen(request),
@@ -75,7 +75,7 @@
          return -1;
      }
  
-     // 4. 接收回复
+    // 4. Receive response
      ret = recvfrom(sockfd,
                     recv_buf,
                     sizeof(recv_buf) - 1,
@@ -89,7 +89,7 @@
      }
      recv_buf[ret] = '\0';
  
-     // 5. 打印回复
+    // 5. Print response
      printf("%s\n", recv_buf);
  
      close(sockfd);
@@ -104,7 +104,7 @@
          return EXIT_FAILURE;
      }
  
-     // 根据第一个参数选择组装请求字符串
+    // Construct request string based on the first argument
      if (strcmp(argv[1], "print") == 0) {
          snprintf(command, sizeof(command), "PRINT_NAT_TABLE");
      }
@@ -133,7 +133,7 @@
          return EXIT_FAILURE;
      }
  
-     // 发送并打印结果
+    // Send request and print result
      if (send_request(command) != 0) {
          fprintf(stderr, "Failed to execute command '%s'\n", command);
          return EXIT_FAILURE;
