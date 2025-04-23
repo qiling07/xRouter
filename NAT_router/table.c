@@ -184,7 +184,7 @@ struct nat_entry *nat_add_port_forward(uint32_t int_ip, uint16_t int_port,
                                        uint8_t proto) {
     pthread_rwlock_wrlock(&nat_internal_rwlock);
     pthread_rwlock_wrlock(&nat_external_rwlock);
-    if (is_ext_port_taken(ext_port, proto)) {
+    if (is_ext_port_taken(ext_port, proto) || ext_port < 49152 || ext_port > 65535) {
         pthread_rwlock_unlock(&nat_external_rwlock);
         pthread_rwlock_unlock(&nat_internal_rwlock);
         return NULL;

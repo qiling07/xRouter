@@ -28,19 +28,21 @@
  #define CMD_MAX_LEN     512
  
 // Print usage help
- static void print_usage(const char *prog) {
-     fprintf(stderr,
-         "Usage: %s <command> [domain]\n"
-         "Commands:\n"
-         "  print            Print NAT table\n"
-         "  add   <domain>   Add domain filter rule\n"
-         "  del   <domain>   Delete domain filter rule\n"
-         "  show             Show all domain filter rules\n",
-         prog);
- }
+static void print_usage(const char *prog) {
+    fprintf(stderr,
+        "Usage: %s <command> [domain]\n"
+        "Commands:\n"
+        "  print            Print NAT table\n"
+        "  reset            Reset NAT table\n"
+        "  add   <domain>   Add domain filter rule\n"
+        "  del   <domain>   Delete domain filter rule\n"
+        "  show             Show all domain filter rules\n"
+        "  forward <internal_ip> <internal_port> <external_port>   Set up port forwarding rule (PORT_FORWARD)\n",
+        prog);
+}
  
 // Send request to router's admin thread and print the response
- static int send_request(const char *request) {
+ static int send_request(const char *request, size_t len) {
      int sockfd, ret;
      struct sockaddr_in srv_addr;
      char recv_buf[MAX_BUFFER];
@@ -63,9 +65,12 @@
      }
  
     // 3. Send command
+    if (len == -1) {
+        len = strlen(request);
+    }
      ret = sendto(sockfd,
                   request,
-                  strlen(request),
+                  len,
                   0,
                   (struct sockaddr *)&srv_addr,
                   sizeof(srv_addr));
@@ -95,9 +100,16 @@
      close(sockfd);
      return 0;
  }
+
+ typedef struct {
+    uint32_t int_ip;
+    uint16_t int_port;
+    uint16_t ext_port;
+} port_forward_info;
  
  int main(int argc, char *argv[]) {
      char command[CMD_MAX_LEN] = {0};
+     size_t command_len = -1;
  
      if (argc < 2) {
          print_usage(argv[0]);
@@ -107,6 +119,9 @@
     // Construct request string based on the first argument
      if (strcmp(argv[1], "print") == 0) {
          snprintf(command, sizeof(command), "PRINT_NAT_TABLE");
+     }
+     else if (strcmp(argv[1], "reset") == 0) {
+         snprintf(command, sizeof(command), "RESET_NAT_TABLE");
      }
      else if (strcmp(argv[1], "add") == 0) {
          if (argc != 3) {
@@ -124,17 +139,44 @@
          }
          snprintf(command, sizeof(command), "DEL_FILTER %s", argv[2]);
      }
-     else if (strcmp(argv[1], "show") == 0) {
-         snprintf(command, sizeof(command), "SHOW_FILTERS");
-     }
-     else {
-         fprintf(stderr, "Unknown command: %s\n", argv[1]);
-         print_usage(argv[0]);
-         return EXIT_FAILURE;
-     }
+    else if (strcmp(argv[1], "show") == 0) {
+        snprintf(command, sizeof(command), "SHOW_FILTERS");
+    }
+    else if (strcmp(argv[1], "forward") == 0) {
+        if (argc != 5) {
+            fprintf(stderr, "Error: 'forward' requires <internal_ip> <internal_port> <external_port>\n");
+            print_usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+        port_forward_info pf;
+        // Parse and validate internal IP
+        pf.int_ip = inet_addr(argv[2]);
+        if (pf.int_ip == INADDR_NONE) {
+            fprintf(stderr, "Invalid internal IP address: %s\n", argv[2]);
+            return EXIT_FAILURE;
+        }
+        // Parse ports
+        pf.int_port = htons((uint16_t)atoi(argv[3]));
+        pf.ext_port = htons((uint16_t)atoi(argv[4]));
+
+        printf("Setting up port forwarding: %s:%d -> %d\n",
+               inet_ntoa(*(struct in_addr *)&pf.int_ip),
+               ntohs(pf.int_port),
+               ntohs(pf.ext_port));
+
+        // Build binary request buffer
+        command_len = strlen("PORT_FORWARD ") + sizeof(pf);
+        memcpy(command, "PORT_FORWARD ", 13);
+        memcpy(command + 13, &pf, sizeof(pf));
+    }
+    else {
+        fprintf(stderr, "Unknown command: %s\n", argv[1]);
+        print_usage(argv[0]);
+        return EXIT_FAILURE;
+    }
  
     // Send request and print result
-     if (send_request(command) != 0) {
+     if (send_request(command, command_len) != 0) {
          fprintf(stderr, "Failed to execute command '%s'\n", command);
          return EXIT_FAILURE;
      }

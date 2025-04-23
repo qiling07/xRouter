@@ -40,6 +40,12 @@ interface_info int_if_info, ext_if_info;
 int outward_sock = -1;
 int inward_sock = -1;
 
+typedef struct {
+    uint32_t int_ip;
+    uint16_t int_port;
+    uint16_t ext_port;
+} port_forward_info;
+
 /* Admin thread function to handle NAT table requests via UDP */
 void *admin_thread_func(void *arg) {
     int admin_fd;
@@ -119,6 +125,27 @@ void *admin_thread_func(void *arg) {
             memset(listbuf, 0, sizeof(listbuf));
             filter_list_str(listbuf, sizeof(listbuf));
             sendto(admin_fd, listbuf, strlen(listbuf), 0,
+                (struct sockaddr*)&client_addr, client_addr_len);
+        }
+        else if (strncmp(admin_buf, "PORT_FORWARD ", 13) == 0) {
+            port_forward_info *request = (port_forward_info*)((uintptr_t)admin_buf + 13);
+            struct nat_entry *e = NULL;
+            char resp[100];
+            if (is_host_address(ntohl(request->int_ip), &int_if_info) == 0) {
+                snprintf(resp, sizeof(resp), "PORT_FORWARD FAILED: Invalid internal IP %s\n", 
+                    inet_ntoa(*(struct in_addr*)&request->int_ip));
+            } else if (NULL == nat_add_port_forward(
+                request->int_ip, ntohs(request->int_port),
+                ext_if_info.ip_addr.s_addr, ntohs(request->ext_port),
+                IPPROTO_TCP)) {
+                snprintf(resp, sizeof(resp), "PORT_FORWARD FAILED: Port already in use\n");
+            } else {
+                snprintf(resp, sizeof(resp), "PORT_FORWARD OK: %s:%d -> %d\n",
+                    inet_ntoa(*(struct in_addr*)&request->int_ip),
+                    ntohs(request->int_port),
+                    ntohs(request->ext_port));
+            }
+            sendto(admin_fd, resp, strlen(resp), 0,
                 (struct sockaddr*)&client_addr, client_addr_len);
         }
         else {
