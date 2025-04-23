@@ -68,21 +68,31 @@ struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if
     e->ext_ip = ext_if_ip;
     e->proto = proto;
     e->ts = time(NULL);
+    e->is_static = 0;
 
     pthread_rwlock_wrlock(&nat_internal_rwlock);
     pthread_rwlock_wrlock(&nat_external_rwlock);
 
     entry_count++;
 
-    if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
-        uint16_t port;
+    // if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+    //     uint16_t port;
+    //     do {
+    //         port = random_port();
+    //     } while (is_ext_port_taken(port, proto));
+    //     e->ext_port = port;
+    // } else {
+    //     e->ext_port = int_port;
+    // }
+
+    uint16_t port = int_port;
+    // If the chosen port/id is already taken, pick a random one
+    if (is_ext_port_taken(port, proto)) {
         do {
-            port = random_port();
+            port += 1;
         } while (is_ext_port_taken(port, proto));
-        e->ext_port = port;
-    } else {
-        e->ext_port = int_port;
     }
+    e->ext_port = port;
 
     // Insert into internal hash table\n
     unsigned i_idx = hash_internal(int_ip, int_port, proto);
@@ -140,11 +150,15 @@ void nat_gc() {
     for (int i = 0; i < NAT_TABLE_SIZE; i++) {
         struct nat_entry **pp = &nat_internal[i];
         while (*pp) {
+            if ((*pp)->is_static) {
+                pp = &(*pp)->int_next;
+                continue;
+            }
             if (now - (*pp)->ts > NAT_TTL) {
                 entry_count--;
                 struct nat_entry *old = *pp;
                 *pp = old->int_next;
-                // Remove from external hash table\n
+                // Remove from external hash table
                 unsigned ex_idx = hash_external(old->ext_port, old->proto);
                 struct nat_entry **qp = &nat_external[ex_idx];
                 while (*qp) {
@@ -162,6 +176,47 @@ void nat_gc() {
     }
     pthread_rwlock_unlock(&nat_external_rwlock);
     pthread_rwlock_unlock(&nat_internal_rwlock);
+}
+
+// Create a static port forwarding entry that will not time out
+struct nat_entry *nat_add_port_forward(uint32_t int_ip, uint16_t int_port,
+                                       uint32_t ext_if_ip, uint16_t ext_port,
+                                       uint8_t proto) {
+    pthread_rwlock_wrlock(&nat_internal_rwlock);
+    pthread_rwlock_wrlock(&nat_external_rwlock);
+    if (is_ext_port_taken(ext_port, proto)) {
+        pthread_rwlock_unlock(&nat_external_rwlock);
+        pthread_rwlock_unlock(&nat_internal_rwlock);
+        return NULL;
+    }
+    
+    struct nat_entry *e = (struct nat_entry *)calloc(1, sizeof(*e));
+    if (!e)
+        return NULL;
+    e->int_ip = int_ip;
+    e->int_port = int_port;
+    e->ext_ip = ext_if_ip;
+    e->ext_port = ext_port;
+    e->proto = proto;
+    e->ts = time(NULL);
+    e->is_static = 1;
+
+    entry_count++;
+
+    // Insert into internal hash table
+    unsigned i_idx = hash_internal(int_ip, int_port, proto);
+    e->int_next = nat_internal[i_idx];
+    nat_internal[i_idx] = e;
+
+    // Insert into external hash table
+    unsigned e_idx = hash_external(ext_port, proto);
+    e->ext_next = nat_external[e_idx];
+    nat_external[e_idx] = e;
+
+    pthread_rwlock_unlock(&nat_external_rwlock);
+    pthread_rwlock_unlock(&nat_internal_rwlock);
+
+    return e;
 }
 
 void print_nat_table() {

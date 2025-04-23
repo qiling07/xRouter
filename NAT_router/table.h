@@ -36,6 +36,7 @@ struct nat_entry {
     // Pointers for hash table chaining
     struct nat_entry *int_next;
     struct nat_entry *ext_next;
+    int is_static; // flag to indicate static port forwarding entry (no timeout)
 };
 
 extern struct nat_entry *nat_internal[NAT_TABLE_SIZE];
@@ -46,6 +47,7 @@ extern size_t entry_count;
 struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reverse);
 int is_ext_port_taken(uint16_t ext_port, uint8_t proto);
 struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint8_t proto);
+struct nat_entry *nat_add_port_forward(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint16_t ext_port, uint8_t proto);
 void nat_gc();
 void nat_reset();
 
