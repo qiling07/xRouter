@@ -371,10 +371,11 @@ int main(int argc, char *argv[]){
             case MTC_DHCPDECLINE:
                 process_dhcp_decline();
                 break;
-            case MTC_DHCPRELEASE:
+            case MTC_DHCPRELEASE: {
                 uint32_t client_ip = ntohl(addr_c.sin_addr.s_addr);
                 process_dhcp_release(server, client_ip, packet, &op_list);
                 break;
+	}
             case MTC_DHCPINFORM:
                 process_dhcp_inform();
                 break;

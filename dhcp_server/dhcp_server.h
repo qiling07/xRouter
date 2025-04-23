@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
+#include <stdint.h>
 #include "addr_pool.h"
 
 #define DHCP_S_PORT 67
@@ -67,16 +69,16 @@ void release_dhcp_server(struct dhcp_server* server){
 void parse_dhcp_conf(struct dhcp_conf *conf){
     // TODO: read parameters from the configuration file or pass parameters via command-line flags
     conf->ip = strdup("10.0.2.15");
-    conf->mac = strdup("08:00:27:9a:fa:f2");
-    conf->isp_interface = strdup("enp0s3");
-    conf->lan_interface = strdup("enp0s8");
+    conf->mac = strdup("52:54:00:12:34:57");
+    conf->isp_interface = strdup("eth0");
+    conf->lan_interface = strdup("eth1");
     conf->gateway = strdup("192.168.20.1");
     conf->netmask = strdup("255.255.255.0");
     conf->broadcast = strdup("192.168.20.255");
     conf->dns_ip = strdup("8.8.8.8");
     conf->domain_name = strdup("router.vm");
     conf->start_ip = strdup("192.168.20.101");
-    conf->end_ip = strdup("192.168.10.200");
+    conf->end_ip = strdup("192.168.20.200");
     conf->pool_size = 100;
     conf->lease_time = 600;
     conf->renew_time = 300;
