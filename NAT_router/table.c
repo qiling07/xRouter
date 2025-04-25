@@ -142,6 +142,69 @@ static void nat_remove(struct nat_entry *e) {
     pthread_rwlock_unlock(&nat_internal_rwlock);
 }
 
+void nat_lookup_and_remove(uint32_t ip, uint16_t port, uint8_t proto, int reverse){
+    pthread_rwlock_wrlock(&nat_internal_rwlock);
+    pthread_rwlock_wrlock(&nat_external_rwlock);
+    struct nat_entry *entry = NULL;
+    if (!reverse) {
+        unsigned idx = hash_internal(ip, port, proto);
+        for (struct nat_entry *e = nat_internal[idx]; e; e = e->int_next) {
+            if (e->int_ip == ip && e->int_port == port && e->proto == proto) {
+                entry = e;
+            }
+        }
+    } else {
+        unsigned idx = hash_external(port, proto);
+        for (struct nat_entry *e = nat_external[idx]; e; e = e->ext_next) {
+            if (e->ext_port == port && e->proto == proto) {
+                entry = e;
+            }
+        }
+        
+    }
+    if((!entry)){
+        pthread_rwlock_unlock(&nat_external_rwlock);
+        pthread_rwlock_unlock(&nat_internal_rwlock);
+        return;
+    }
+    if((entry->int_fin!=1)||(entry->ext_fin!=1)||(entry->last_ack!=1)){
+        pthread_rwlock_unlock(&nat_external_rwlock);
+        pthread_rwlock_unlock(&nat_internal_rwlock);
+        return;
+    }
+    bool found_internal = false, found_external = false;
+    
+    entry_count--;
+    // Remove from internal hash table\n
+    unsigned i_idx = hash_internal(entry->int_ip, entry->int_port, entry->proto);
+    struct nat_entry **pp = &nat_internal[i_idx];
+    while (*pp) {
+        if (*pp == entry) {
+            *pp = (*pp)->int_next;
+            found_internal = true;
+            break;
+        }
+        pp = &(*pp)->int_next;
+    }
+    // Remove from external hash table\n
+    unsigned ex_idx = hash_external(entry->ext_port, entry->proto);
+    struct nat_entry **qp = &nat_external[ex_idx];
+    while (*qp) {
+        if (*qp == entry) {
+            *qp = (*qp)->ext_next;
+            found_external = true;
+            break;
+        }
+        qp = &(*qp)->ext_next;
+    }
+    // Only decrement and free if we actually removed something
+    free(entry);
+
+    pthread_rwlock_unlock(&nat_external_rwlock);
+    pthread_rwlock_unlock(&nat_internal_rwlock);
+
+}
+
 void nat_gc() {
     time_t now = time(NULL);
     

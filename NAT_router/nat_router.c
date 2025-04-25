@@ -40,12 +40,6 @@ interface_info int_if_info, ext_if_info;
 int outward_sock = -1;
 int inward_sock = -1;
 
-typedef struct {
-    uint32_t int_ip;
-    uint16_t int_port;
-    uint16_t ext_port;
-} port_forward_info;
-
 /* Admin thread function to handle NAT table requests via UDP */
 void *admin_thread_func(void *arg) {
     int admin_fd;
@@ -92,16 +86,6 @@ void *admin_thread_func(void *arg) {
                 perror("Admin thread: sendto failed");
             }
         }
-        else if (strcmp(admin_buf, "RESET_NAT_TABLE") == 0) {
-            // Reset the NAT table
-            nat_reset();
-            // Send acknowledgment back to client
-            const char *reset_msg = "NAT table has been reset";
-            if (sendto(admin_fd, reset_msg, strlen(reset_msg), 0,
-                       (struct sockaddr *)&client_addr, client_addr_len) < 0) {
-                perror("Admin thread: sendto failed");
-            }
-        }
         else if (strncmp(admin_buf, "ADD_FILTER ", 11) == 0) {
             char *domain = admin_buf + 11;
             int r = filter_add(domain);
@@ -125,27 +109,6 @@ void *admin_thread_func(void *arg) {
             memset(listbuf, 0, sizeof(listbuf));
             filter_list_str(listbuf, sizeof(listbuf));
             sendto(admin_fd, listbuf, strlen(listbuf), 0,
-                (struct sockaddr*)&client_addr, client_addr_len);
-        }
-        else if (strncmp(admin_buf, "PORT_FORWARD ", 13) == 0) {
-            port_forward_info *request = (port_forward_info*)((uintptr_t)admin_buf + 13);
-            struct nat_entry *e = NULL;
-            char resp[100];
-            if (is_host_address(ntohl(request->int_ip), &int_if_info) == 0) {
-                snprintf(resp, sizeof(resp), "PORT_FORWARD FAILED: Invalid internal IP %s\n", 
-                    inet_ntoa(*(struct in_addr*)&request->int_ip));
-            } else if (NULL == nat_add_port_forward(
-                request->int_ip, ntohs(request->int_port),
-                ext_if_info.ip_addr.s_addr, ntohs(request->ext_port),
-                IPPROTO_TCP)) {
-                snprintf(resp, sizeof(resp), "PORT_FORWARD FAILED: Port already in use\n");
-            } else {
-                snprintf(resp, sizeof(resp), "PORT_FORWARD OK: %s:%d -> %d\n",
-                    inet_ntoa(*(struct in_addr*)&request->int_ip),
-                    ntohs(request->int_port),
-                    ntohs(request->ext_port));
-            }
-            sendto(admin_fd, resp, strlen(resp), 0,
                 (struct sockaddr*)&client_addr, client_addr_len);
         }
         else {
@@ -180,10 +143,15 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
     void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
     uint16_t id_or_port = 0;
     size_t hdr_add = 0;
+    bool is_tcp_fin = false;
+    bool is_tcp_ack = false;
+
     if (ip->ip_p == IPPROTO_TCP) {
         struct tcphdr *t = l4;
         id_or_port = ntohs(t->source);
         hdr_add = t->doff * 4;
+        if (t->fin) is_tcp_fin = true;
+        if (t->ack) is_tcp_ack = true;
         t->check = 0;
     } else if (ip->ip_p == IPPROTO_UDP) {
         struct udphdr *u = l4;
@@ -202,9 +170,18 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
         return;
     
     struct nat_entry *e = nat_lookup(ip->ip_src.s_addr, id_or_port, ip->ip_p, 0);
+    
     if (!e) {
         e = nat_create(ip->ip_src.s_addr, id_or_port, ext_if_info.ip_addr.s_addr, ip->ip_p);
     }
+    if ((e->int_fin==1)&&(e->ext_fin==1)&&(is_tcp_ack)&&(!is_tcp_fin)){
+        e->last_ack = 1;
+    }
+    if (is_tcp_fin) {        
+        e->int_fin = 1;
+    }
+
+
     e->ts = time(NULL);
     ip->ip_src.s_addr = e->ext_ip;
     if (ip->ip_p == IPPROTO_TCP) {
@@ -224,6 +201,7 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
     } else if (ip->ip_p == IPPROTO_ICMP) {
         ((struct icmphdr *)l4)->checksum = checksum(l4, l4len);
     }
+    // TODO: check rst for TCP
 
     struct sockaddr_in dst = {
         .sin_family = AF_INET,
@@ -235,6 +213,7 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
                          0,
                          (struct sockaddr*)&dst,
                          sizeof(dst));
+    
     if (ret < 0) {
         if (errno == EMSGSIZE) {
             int mtu = ext_if_info.mtu;
@@ -247,6 +226,9 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
             perror("raw sendto");
             print_tcpdump_packet(ip, ext_if_info.name);
         }
+    }
+    if (is_tcp_ack) {
+        nat_lookup_and_remove(ip->ip_src.s_addr, id_or_port, ip->ip_p, 0);
     }
 }
 struct packet_data {
@@ -297,7 +279,7 @@ void* internal_thread_func(void *arg) {
         pthread_attr_destroy(&attr);
     }
     
-    close(raw_int);
+    pclose(raw_int);
     return NULL;
 }
 
@@ -323,10 +305,16 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
     void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
     uint16_t id_or_port = 0;
     size_t hdr_add = 0;
+    bool is_tcp_fin = false;
+    bool is_tcp_ack = false;
+    bool is_tcp_rst = false;
     if (ip->ip_p == IPPROTO_TCP) {
         struct tcphdr *t = l4;
         id_or_port = ntohs(t->dest);
         hdr_add = t->doff * 4;
+        if (t->fin) is_tcp_fin = true;
+        if (t->ack) is_tcp_ack = true;
+        if (t->rst) is_tcp_rst = true;
         t->check = 0;
     } else if (ip->ip_p == IPPROTO_UDP) {
         struct udphdr *u = l4;
@@ -343,8 +331,23 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
     }
     
     struct nat_entry *e = nat_lookup(ip->ip_dst.s_addr, id_or_port, ip->ip_p, 1);
+    
     if (!e)
         return;
+    if ((e->int_fin==1)&&(e->ext_fin==1)&&(is_tcp_ack)&&(!is_tcp_fin)){
+        e->last_ack = 1;
+    }
+    if (is_tcp_fin) {
+        e->ext_fin = 1;
+    }
+    if (is_tcp_rst){
+        e->ext_fin = 1;
+        e->last_ack = 1;
+        e->int_fin = 1;
+        //printf("connection rst!\n");
+    }
+
+
     e->ts = time(NULL);
     ip->ip_dst.s_addr = e->int_ip;
     if (ip->ip_p == IPPROTO_TCP) {
@@ -365,6 +368,8 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
         ((struct icmphdr *)l4)->checksum = checksum(l4, l4len);
     }
 
+    // TODO check rst for TCP
+
     struct sockaddr_in dst = {
         .sin_family = AF_INET,
         .sin_addr  = ip->ip_dst,
@@ -375,6 +380,9 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
                          0,
                          (struct sockaddr*)&dst,
                          sizeof(dst));
+    if ((is_tcp_ack)||(is_tcp_rst)){
+        nat_lookup_and_remove(ip->ip_dst.s_addr, id_or_port, ip->ip_p, 1);
+    }
     if (ret < 0) {
         if (errno == EMSGSIZE) {
             int mtu = int_if_info.mtu;
@@ -388,6 +396,7 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
             print_tcpdump_packet(ip, int_if_info.name);
         }
     }
+
 }
 
 void* packet_worker_func_external(void *arg) {
@@ -430,7 +439,7 @@ void* external_thread_func(void *arg) {
         pthread_attr_destroy(&attr);
     }
 
-    close(raw_ext);
+    pclose(raw_ext);
     return NULL;
 }
 
