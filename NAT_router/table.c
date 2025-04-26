@@ -22,6 +22,10 @@ uint16_t random_port() {
     return (rand() % (65535 - 49152)) + 49152;
 }
 
+uint16_t fix_port_range(uint16_t p) {
+    return (p % (65535 - 49152)) + 49152;
+}
+
 struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reverse) {
 
     if (!reverse) {
@@ -85,11 +89,11 @@ struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if
     //     e->ext_port = int_port;
     // }
 
-    uint16_t port = int_port;
+    uint16_t port = fix_port_range(int_port);
     // If the chosen port/id is already taken, pick a random one
     if (is_ext_port_taken(port, proto)) {
         do {
-            port += 1;
+            port = fix_port_range(port + 1);
         } while (is_ext_port_taken(port, proto));
     }
     e->ext_port = port;

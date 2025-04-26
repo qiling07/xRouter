@@ -279,7 +279,7 @@ void* internal_thread_func(void *arg) {
         pthread_attr_destroy(&attr);
     }
     
-    pclose(raw_int);
+    close(raw_int);
     return NULL;
 }
 
@@ -439,7 +439,7 @@ void* external_thread_func(void *arg) {
         pthread_attr_destroy(&attr);
     }
 
-    pclose(raw_ext);
+    close(raw_ext);
     return NULL;
 }
 
