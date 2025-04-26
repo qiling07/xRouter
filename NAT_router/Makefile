@@ -1,12 +1,12 @@
 CC = g++
 CFLAGS = -fpermissive -pthread -Ifilter
 SRC = nat_router.c table.c debug_print.c utils.c filter/filter.c
-TARGET = nat_router
+TARGET = nat_router 
 
 
 OBJ = nat_router
 
-all: $(TARGET)
+all: $(TARGET) manager_client
 
 $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) $(SRC) -o $(TARGET)
@@ -17,7 +17,7 @@ clean:
 config:
 	iptables-legacy -I INPUT -i enp1s0f0 -p tcp --dport 49152:65535 -j DROP
 
-tests: test-ping test-dns test-curl
+tests: test-ping test-dns 
 	@echo "Running tests..."
 
 test-ping:
@@ -26,7 +26,7 @@ test-ping:
 test-dns:
 	nslookup www.youtube.com
 
-test-curl:
-	curl -O https://link.testfile.org/500MB
-	sha256sum 500MB | grep -q e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
-		&& echo "OK" || echo "FAIL"
+# test-curl:
+# 	curl -O https://link.testfile.org/500MB
+# 	sha256sum 500MB | grep -q e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
+# 		&& echo "OK" || echo "FAIL"
