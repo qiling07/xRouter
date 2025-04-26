@@ -6,6 +6,8 @@ import struct
 import threading
 import subprocess
 import ipaddress
+import hashlib
+import base64
 from pathlib import Path
 
 CRED_FILE        = Path(__file__).parent / "credentials.json"
@@ -17,19 +19,16 @@ LISTEN_PORT      = 8888
 
 def load_allowed_networks():
     if not ALLOWED_FILE.exists():
-        # default to your LAN
         defaults = ["10.10.1.0/24"]
         ALLOWED_FILE.write_text(json.dumps(defaults))
-        return [ipaddress.IPv4Network(cidr) for cidr in defaults]
+        return [ipaddress.IPv4Network(c) for c in defaults]
     lst = json.loads(ALLOWED_FILE.read_text())
-    return [ipaddress.IPv4Network(cidr) for cidr in lst]
+    return [ipaddress.IPv4Network(c) for c in lst]
 
 def save_allowed_networks(nets):
-    # nets: List[ipaddress.IPv4Network]
     cidrs = [str(net) for net in nets]
     ALLOWED_FILE.write_text(json.dumps(cidrs))
 
-# load once at startup
 ALLOWED_NETWORKS = load_allowed_networks()
 
 # ——— Helpers ———
@@ -44,24 +43,44 @@ def get_local_ips():
 
 def is_allowed(addr_str):
     addr = ipaddress.IPv4Address(addr_str)
-    # router’s own IPs
     if addr in get_local_ips():
         return True
-    # any configured network
     return any(addr in net for net in ALLOWED_NETWORKS)
 
-# ——— Core server/handler ———
+# ——— Credential handling ———
 
 def load_creds():
     if not CRED_FILE.exists():
-        creds = {"username": "admin", "password": "password"}
+        # first-run defaults
+        salt = os.urandom(16)
+        pwd_hash = hashlib.pbkdf2_hmac('sha256', b"password", salt, 100_000)
+        creds = {
+            "username":      "admin",
+            "salt":          base64.b64encode(salt).decode(),
+            "password_hash": base64.b64encode(pwd_hash).decode()
+        }
         CRED_FILE.write_text(json.dumps(creds))
     else:
         creds = json.loads(CRED_FILE.read_text())
     return creds
 
-def save_creds(creds):
-    CRED_FILE.write_text(json.dumps(creds))
+def save_creds(creds_plain):
+    # creds_plain: {"username": <str>, "password": <str>}
+    salt = os.urandom(16)
+    pwd_hash = hashlib.pbkdf2_hmac(
+        'sha256',
+        creds_plain['password'].encode(),
+        salt,
+        100_000
+    )
+    stored = {
+        "username":      creds_plain['username'],
+        "salt":          base64.b64encode(salt).decode(),
+        "password_hash": base64.b64encode(pwd_hash).decode()
+    }
+    CRED_FILE.write_text(json.dumps(stored))
+
+# ——— Core server/handler ———
 
 def handle_client(conn, addr):
     creds = load_creds()
@@ -69,7 +88,13 @@ def handle_client(conn, addr):
     user = conn.recv(100).decode().strip()
     conn.sendall(b"Password: ")
     pwd  = conn.recv(100).decode().strip()
-    if user != creds["username"] or pwd != creds["password"]:
+
+    # verify
+    salt = base64.b64decode(creds['salt'])
+    expected_hash = base64.b64decode(creds['password_hash'])
+    test_hash = hashlib.pbkdf2_hmac('sha256', pwd.encode(), salt, 100_000)
+
+    if user != creds["username"] or test_hash != expected_hash:
         conn.sendall(b"Invalid credentials. Goodbye.\n")
         conn.close()
         return
@@ -93,28 +118,25 @@ Commands:
   add <domain>
   del <domain>
   show
-  forward <internal_ip> <internal_port> <external_port>
-  unforward <internal_ip> <internal_port> <external_port>
+  forward <int_ip> <int_port> <ext_port>
+  unforward <int_ip> <int_port> <ext_port>
   show_forwarding
-  latency
-  allow  <network/CIDR>
-  deny   <network/CIDR>
+  latency <network/CIDR>
+  allow        <network/CIDR>
+  deny         <network/CIDR>
   show_allowed
   passwd
   exit
 """)
             continue
 
-        # ——— allow <network/CIDR>
         if cmd.startswith("allow "):
             try:
                 _, cidr = cmd.split(None, 1)
                 new_net = ipaddress.IPv4Network(cidr, strict=False)
-            except Exception:
+            except:
                 conn.sendall(b"Usage: allow <network/CIDR>\n")
                 continue
-
-            # merge with existing
             merged = list(ipaddress.collapse_addresses(ALLOWED_NETWORKS + [new_net]))
             ALLOWED_NETWORKS.clear()
             ALLOWED_NETWORKS.extend(merged)
@@ -122,30 +144,25 @@ Commands:
             conn.sendall(f"Allowed {new_net}\n".encode())
             continue
 
-        # ——— deny <network/CIDR>
         if cmd.startswith("deny "):
             try:
                 _, cidr = cmd.split(None, 1)
                 deny_net = ipaddress.IPv4Network(cidr, strict=False)
-            except Exception:
+            except:
                 conn.sendall(b"Usage: deny <network/CIDR>\n")
                 continue
-
             survivors = []
             for net in ALLOWED_NETWORKS:
                 if net.overlaps(deny_net):
-                    # subtract deny_net from net
                     survivors.extend(net.address_exclude(deny_net))
                 else:
                     survivors.append(net)
-            # collapse in case of adjacency
             ALLOWED_NETWORKS.clear()
             ALLOWED_NETWORKS.extend(ipaddress.collapse_addresses(survivors))
             save_allowed_networks(ALLOWED_NETWORKS)
             conn.sendall(f"Denied {deny_net}\n".encode())
             continue
 
-        # ——— show_allowed
         if cmd == "show_allowed":
             conn.sendall(b"Allowed networks:\n")
             for net in ALLOWED_NETWORKS:
@@ -164,7 +181,7 @@ Commands:
             conn.sendall(b"Credentials updated.\n")
             continue
 
-        # pass-thru for all other commands
+        # fallback to manager_client
         try:
             proc = subprocess.run(
                 [str(MANAGER_CLIENT)] + cmd.split(),
@@ -202,3 +219,4 @@ def serve():
 
 if __name__ == "__main__":
     serve()
+    
