@@ -64,6 +64,9 @@ Commands:
   del <domain>
   show
   forward <internal_ip> <internal_port> <external_port>
+  unforward <internal_ip> <internal_port> <external_port>
+  show_forwarding
+  latency
   passwd    # change user/password
   exit
 """)

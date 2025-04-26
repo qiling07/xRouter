@@ -31,6 +31,7 @@
 #include "debug_print.h"
 #include "utils.h"
 #include "filter/filter.h"
+#include "latency.h"
 #include <net/if.h>
 #include <sys/ioctl.h>
 
@@ -86,7 +87,7 @@ void *admin_thread_func(void *arg) {
         printf("Admin thread: received command: %s\n", admin_buf);
         if (strcmp(admin_buf, "PRINT_NAT_TABLE") == 0) {
             memset(nat_table_str, 0, sizeof(nat_table_str));
-            get_nat_table_string(nat_table_str, sizeof(nat_table_str));
+            get_nat_table_string(nat_table_str, sizeof(nat_table_str), 0);
             if (sendto(admin_fd, nat_table_str, strlen(nat_table_str), 0,
                        (struct sockaddr *)&client_addr, client_addr_len) < 0) {
                 perror("Admin thread: sendto failed");
@@ -147,6 +148,48 @@ void *admin_thread_func(void *arg) {
             }
             sendto(admin_fd, resp, strlen(resp), 0,
                 (struct sockaddr*)&client_addr, client_addr_len);
+        }
+        else if (strncmp(admin_buf, "DEL_FORWARD ", 12) == 0) {
+            port_forward_info *request = (port_forward_info*)((uintptr_t)admin_buf + 12);
+            char resp[100];
+            int r = nat_delete_port_forward(request->int_ip, ntohs(request->int_port), 
+                ext_if_info.ip_addr.s_addr, ntohs(request->ext_port), 
+                IPPROTO_TCP);
+            if (r == 0) {
+                snprintf(resp, sizeof(resp), "DEL_FORWARD OK: %s:%d -> %d\n",
+                    inet_ntoa(*(struct in_addr*)&request->int_ip),
+                    ntohs(request->int_port),
+                    ntohs(request->ext_port));
+            } else {
+                snprintf(resp, sizeof(resp), "DEL_FORWARD FAILED: %s:%d -> %d\n",
+                    inet_ntoa(*(struct in_addr*)&request->int_ip),
+                    ntohs(request->int_port),
+                    ntohs(request->ext_port));
+            }
+            sendto(admin_fd, resp, strlen(resp), 0,
+                    (struct sockaddr*)&client_addr, client_addr_len);
+        }
+        else if (strcmp(admin_buf, "PRINT_FORWARD") == 0) {
+            memset(nat_table_str, 0, sizeof(nat_table_str));
+            get_nat_table_string(nat_table_str, sizeof(nat_table_str), 1);
+            if (sendto(admin_fd, nat_table_str, strlen(nat_table_str), 0,
+                       (struct sockaddr *)&client_addr, client_addr_len) < 0) {
+                perror("Admin thread: sendto failed");
+            }
+        }
+        else if (strncmp(admin_buf, "LATENCY ", 8) == 0) {
+            char netcidr[32] = {0};
+            if (sscanf(admin_buf + 8, " %31s", netcidr) != 1) {
+                const char *usage = "Usage: LATENCY <network/CIDR>\n";
+                sendto(admin_fd, usage, strlen(usage), 0,
+                       (struct sockaddr*)&client_addr, client_addr_len);
+            } else {
+                char latbuf[16384];
+                memset(latbuf, 0, sizeof(latbuf));
+                latency_probe_all(netcidr, latbuf, sizeof(latbuf));
+                sendto(admin_fd, latbuf, strlen(latbuf), 0,
+                       (struct sockaddr*)&client_addr, client_addr_len);
+            }
         }
         else {
             const char *resp = "UNKNOWN COMMAND\n";

@@ -37,7 +37,8 @@ static void print_usage(const char *prog) {
         "  add   <domain>   Add domain filter rule\n"
         "  del   <domain>   Delete domain filter rule\n"
         "  show             Show all domain filter rules\n"
-        "  forward <internal_ip> <internal_port> <external_port>   Set up port forwarding rule (PORT_FORWARD)\n",
+        "  forward <internal_ip> <internal_port> <external_port>   Set up port forwarding rule (PORT_FORWARD)\n"
+        "  latency          Probe latency to each internal host (LATENCY)\n",
         prog);
 }
  
@@ -168,6 +169,45 @@ static void print_usage(const char *prog) {
         command_len = strlen("PORT_FORWARD ") + sizeof(pf);
         memcpy(command, "PORT_FORWARD ", 13);
         memcpy(command + 13, &pf, sizeof(pf));
+    }
+    else if (strcmp(argv[1], "unforward") == 0) {
+        if (argc != 5) {
+            fprintf(stderr, "Error: 'unforward' requires <internal_ip> <internal_port> <external_port>\n");
+            print_usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+        port_forward_info pf;
+        // Parse and validate internal IP
+        pf.int_ip = inet_addr(argv[2]);
+        if (pf.int_ip == INADDR_NONE) {
+            fprintf(stderr, "Invalid internal IP address: %s\n", argv[2]);
+            return EXIT_FAILURE;
+        }
+        // Parse ports
+        pf.int_port = htons((uint16_t)atoi(argv[3]));
+        pf.ext_port = htons((uint16_t)atoi(argv[4]));
+
+        printf("Deleting port forwarding: %s:%d -> %d\n",
+               inet_ntoa(*(struct in_addr *)&pf.int_ip),
+               ntohs(pf.int_port),
+               ntohs(pf.ext_port));
+
+        // Build binary request buffer
+        command_len = strlen("DEL_FORWARD ") + sizeof(pf);
+        memcpy(command, "DEL_FORWARD ", 12);
+        memcpy(command + 12, &pf, sizeof(pf));
+    }
+    else if (strcmp(argv[1], "latency") == 0) {
+        if (argc != 3) {
+            fprintf(stderr, "Error: 'latency' requires <network/CIDR>\n");
+            print_usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+        snprintf(command, sizeof(command), "LATENCY %s", argv[2]);
+        command_len = strlen(command);
+    }
+    else if (strcmp(argv[1], "show_forwarding") == 0) {
+        snprintf(command, sizeof(command), "PRINT_FORWARD");
     }
     else {
         fprintf(stderr, "Unknown command: %s\n", argv[1]);

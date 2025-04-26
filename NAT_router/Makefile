@@ -1,6 +1,6 @@
 CC = g++
 CFLAGS = -fpermissive -pthread -Ifilter
-SRC = nat_router.c table.c debug_print.c utils.c filter/filter.c
+SRC = nat_router.c table.c debug_print.c utils.c filter/filter.c latency.c
 TARGET = nat_router 
 
 
