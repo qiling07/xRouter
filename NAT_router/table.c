@@ -89,14 +89,18 @@ struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if
     //     e->ext_port = int_port;
     // }
 
-    uint16_t port = fix_port_range(int_port);
-    // If the chosen port/id is already taken, pick a random one
-    if (is_ext_port_taken(port, proto)) {
-        do {
-            port = fix_port_range(port + 1);
-        } while (is_ext_port_taken(port, proto));
+    if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+        uint16_t port = fix_port_range(int_port);
+        // If the chosen port/id is already taken, pick a random one
+        if (is_ext_port_taken(port, proto)) {
+            do {
+                port = fix_port_range(port + 1);
+            } while (is_ext_port_taken(port, proto));
+        }
+        e->ext_port = port;
+    } else {
+        e->ext_port = int_port;
     }
-    e->ext_port = port;
 
     // Insert into internal hash table\n
     unsigned i_idx = hash_internal(int_ip, int_port, proto);
