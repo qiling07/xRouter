@@ -92,12 +92,22 @@ struct nat_entry *nat_lookup_inbound(uint32_t src_ip, uint16_t src_port,
             && proto == e->proto) {}
         else continue;
         
-        // strict check for non-static bindings
-        if ((src_ip == e->dst_ip && src_port == e->dst_port)
-            || e->is_static) {
-            e->ts = time(NULL);
-            pthread_rwlock_unlock(&nat_external_rwlock);
-            return e;
+        // strict check for non-static bindings)
+        if (proto == IPPROTO_ICMP) {
+            if (src_ip == e->dst_ip
+                || e->is_static) {
+                e->ts = time(NULL);
+                pthread_rwlock_unlock(&nat_external_rwlock);
+                return e;
+            }
+        }
+        else {
+            if ((src_ip == e->dst_ip && src_port == e->dst_port)
+                || e->is_static) {
+                e->ts = time(NULL);
+                pthread_rwlock_unlock(&nat_external_rwlock);
+                return e;
+            }
         }
     }
     pthread_rwlock_unlock(&nat_external_rwlock);
