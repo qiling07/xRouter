@@ -29,8 +29,9 @@
 #define MAX_PORT 65535
 #define AVAILABLE_PORTS (MAX_PORT - MIN_PORT + 1)
 
-#define TCP_NAT_TTL 24 * 60 * 60        // 24 hours
-#define NAT_TTL 120                     // 2 minutes
+#define TCP_CLOSED_TTL 10                // 10 seconds
+#define TCP_INACTIVE_TTL 600                 // 10 minutes
+#define NAT_INACTIVE_TTL 120                     // 2 minutes
 #define NAT_TABLE_SIZE 1024
 
 /* ---------------- NAT table ---------------- */
@@ -49,6 +50,7 @@ struct nat_entry {
     time_t ts;            // last activity
     int is_static;        // flag to indicate static port forwarding entry (no timeout)
 
+    uint8_t tcp_status;
     uint8_t ext_fin = 0;
     uint8_t int_fin = 0;
     uint8_t last_ack = 0;
@@ -69,11 +71,14 @@ extern struct nat_entry *nat_external[NAT_TABLE_SIZE];
 // void nat_lookup_and_remove(uint32_t ip, uint16_t port, uint8_t proto, int reverse);
 
 struct nat_entry *nat_lookup_outbound(uint32_t src_ip, uint16_t src_port, 
-                                    uint32_t dst_ip, uint16_t dst_port, uint8_t proto);
+                                    uint32_t dst_ip, uint16_t dst_port, uint8_t proto,
+                                    bool is_tcp_fin, bool is_tcp_ack, bool is_tcp_rst);
 struct nat_entry *nat_lookup_inbound(uint32_t src_ip, uint16_t src_port, 
-                                    uint32_t dst_ip, uint16_t dst_port, uint8_t proto);
+                                    uint32_t dst_ip, uint16_t dst_port, uint8_t proto,
+                                    bool is_tcp_fin, bool is_tcp_ack, bool is_tcp_rst);
 struct nat_entry *nat_lookup_or_create_outbound(uint32_t src_ip, uint16_t src_port, 
-                                        uint32_t dst_ip, uint16_t dst_port, uint8_t proto, uint32_t ext_if_ip);
+                                        uint32_t dst_ip, uint16_t dst_port, uint8_t proto, uint32_t ext_if_ip,
+                                        bool is_tcp_fin, bool is_tcp_ack, bool is_tcp_rst);
 
 void nat_gc();
 void nat_reset();

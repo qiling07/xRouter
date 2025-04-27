@@ -57,7 +57,7 @@ struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reve
 }
 
 struct nat_entry *nat_lookup_outbound(uint32_t src_ip, uint16_t src_port, 
-    uint32_t dst_ip, uint16_t dst_port, uint8_t proto) 
+    uint32_t dst_ip, uint16_t dst_port, uint8_t proto, bool is_tcp_fin, bool is_tcp_ack, bool is_tcp_rst) 
 {
     unsigned idx = hash_internal(src_ip, src_port, proto);
 
@@ -72,6 +72,14 @@ struct nat_entry *nat_lookup_outbound(uint32_t src_ip, uint16_t src_port,
         if ((dst_ip == e->dst_ip && dst_port == e->dst_port)
             || e->is_static) {
             e->ts = time(NULL);
+
+            // if TCP, update the connection status
+            if ((!e->is_static) && proto == IPPROTO_TCP) {
+                if (is_tcp_ack && (e->tcp_status & 0b011) == 0b011) e->tcp_status |= 0b100;
+                if (is_tcp_fin) e->tcp_status |= 0b001;
+                if (is_tcp_rst) e->tcp_status |= 0b111;
+            }
+
             pthread_rwlock_unlock(&nat_internal_rwlock);
             return e;
         }
@@ -81,7 +89,7 @@ struct nat_entry *nat_lookup_outbound(uint32_t src_ip, uint16_t src_port,
 }
 
 struct nat_entry *nat_lookup_inbound(uint32_t src_ip, uint16_t src_port, 
-    uint32_t dst_ip, uint16_t dst_port, uint8_t proto) 
+    uint32_t dst_ip, uint16_t dst_port, uint8_t proto, bool is_tcp_fin, bool is_tcp_ack, bool is_tcp_rst) 
 {
     unsigned idx = hash_external(dst_port, proto);
 
@@ -105,6 +113,14 @@ struct nat_entry *nat_lookup_inbound(uint32_t src_ip, uint16_t src_port,
             if ((src_ip == e->dst_ip && src_port == e->dst_port)
                 || e->is_static) {
                 e->ts = time(NULL);
+                
+                // if TCP, update the connection status
+                if ((!e->is_static) && proto == IPPROTO_TCP) {
+                    if (is_tcp_ack && (e->tcp_status & 0b11) == 0b11) e->tcp_status |= 0b100;
+                    if (is_tcp_fin) e->tcp_status |= 0b010;
+                    if (is_tcp_rst) e->tcp_status |= 0b111;
+                }
+
                 pthread_rwlock_unlock(&nat_external_rwlock);
                 return e;
             }
@@ -128,6 +144,7 @@ struct nat_entry *nat_create_binding(uint32_t src_ip, uint16_t src_port,
     e->dst_ip = dst_ip;
     e->dst_port = dst_port;
     e->proto = proto;
+    e->tcp_status = 0;
 
 
     pthread_rwlock_wrlock(&nat_internal_rwlock);
@@ -159,9 +176,9 @@ struct nat_entry *nat_create_binding(uint32_t src_ip, uint16_t src_port,
 }
 
 struct nat_entry *nat_lookup_or_create_outbound(uint32_t src_ip, uint16_t src_port, 
-    uint32_t dst_ip, uint16_t dst_port, uint8_t proto, uint32_t ext_if_ip) 
+    uint32_t dst_ip, uint16_t dst_port, uint8_t proto, uint32_t ext_if_ip, bool is_tcp_fin, bool is_tcp_ack, bool is_tcp_rst) 
 {
-    struct nat_entry *e = nat_lookup_outbound(src_ip, src_port, dst_ip, dst_port, proto);
+    struct nat_entry *e = nat_lookup_outbound(src_ip, src_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
     if (e) return e;
 
     // If not found, create a new entry
@@ -322,10 +339,16 @@ void nat_gc() {
                 pp = &(*pp)->int_next;
                 continue;
             }
-            // TODO: handle different situations
+            // handle different situations
             // 1. closed TCP
             // 2. long-idle TCP/UDP/ICMP
-            if (now - (*pp)->ts > NAT_TTL) {
+            uint8_t tcp_status = (*pp)->tcp_status;
+            time_t inactive_time = now - (*pp)->ts;
+            uint8_t proto = (*pp)->proto;
+            bool outdated = ((tcp_status & 0b100) == 0b100 && inactive_time > TCP_CLOSED_TTL) ||
+                            ((tcp_status & 0b100) == 0 && proto == IPPROTO_TCP && inactive_time > TCP_INACTIVE_TTL) ||
+                            (proto != IPPROTO_TCP && inactive_time > NAT_INACTIVE_TTL);
+            if (outdated) {
                 entry_count--;
                 struct nat_entry *old = *pp;
                 *pp = old->int_next;
@@ -377,6 +400,7 @@ struct nat_entry *nat_add_port_forward(uint32_t int_ip, uint16_t int_port,
     e->proto = proto;
     e->ts = time(NULL);    
     e->is_static = 1;
+    e->tcp_status = 0;
 
     entry_count++;
 

@@ -239,6 +239,7 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     size_t l4_hdr_len = 0;
     bool is_tcp_fin = false;
     bool is_tcp_ack = false;
+    bool is_tcp_rst = false;
 
     if (proto == IPPROTO_TCP) {
         struct tcphdr *t = l4;
@@ -248,8 +249,9 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
         l4_hdr_len = t->doff * 4;
         t->check = 0;
 
-        // if (t->fin) is_tcp_fin = true;
-        // if (t->ack) is_tcp_ack = true;
+        if (t->fin) is_tcp_fin = true;
+        if (t->ack) is_tcp_ack = true;
+        if (t->rst) is_tcp_rst = true;
     } else if (proto == IPPROTO_UDP) {
         struct udphdr *u = l4;
         src_port = ntohs(u->source);
@@ -274,16 +276,15 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     
     // detect start of session -- if so, create a new binding; otherwise, use the existing binding
     // time used for the binding is updated in nat_lookup_or_create_outbound
-    struct nat_entry *e = nat_lookup_or_create_outbound(src_ip, src_port, dst_ip, dst_port, proto, ntohl(ext_if_info.ip_addr.s_addr));
+    struct nat_entry *e = nat_lookup_or_create_outbound(src_ip, src_port, dst_ip, dst_port, proto, ntohl(ext_if_info.ip_addr.s_addr), is_tcp_fin, is_tcp_ack, is_tcp_rst);
     assert(e != NULL);
-    
-    // if ((e->int_fin==1)&&(e->ext_fin==1)&&(is_tcp_ack)&&(!is_tcp_fin)){
-    //     e->last_ack = 1;
-    // }
-    // if (is_tcp_fin) {        
-    //     e->int_fin = 1;
-    // }
 
+    if (e->int_fin == 1 && e->ext_fin == 1 && is_tcp_ack && !is_tcp_fin) {
+        e->last_ack = 1;
+    }
+    if (is_tcp_fin) {
+        e->int_fin = 1;
+    }
 
     // translation:
     // TCP/UDP: src_ip -> ext_ip, src_port -> ext_port
@@ -312,8 +313,6 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
         assert(0 && "Unreachable");
     }
 
-    // TODO: check rst for TCP
-
     struct sockaddr_in dst = {
         .sin_family = AF_INET,
         .sin_addr  = ip->ip_dst,
@@ -338,9 +337,6 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
             print_tcpdump_packet(ip, ext_if_info.name);
         }
     }
-    // if (is_tcp_ack) {
-    //     nat_lookup_and_remove(ip->ip_src.s_addr, src_port, ip->ip_p, 0);
-    // }
 }
 struct packet_data {
     unsigned char *data;
@@ -434,9 +430,9 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
         l4_hdr_len = t->doff * 4;
         t->check = 0;
 
-        // if (t->fin) is_tcp_fin = true;
-        // if (t->ack) is_tcp_ack = true;
-        // if (t->rst) is_tcp_rst = true;
+        if (t->fin) is_tcp_fin = true;
+        if (t->ack) is_tcp_ack = true;
+        if (t->rst) is_tcp_rst = true;
     } else if (proto == IPPROTO_UDP) {
         struct udphdr *u = l4;
         src_port = ntohs(u->source);
@@ -461,22 +457,21 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     
     // find an existing binding
     // time used for the binding is updated in nat_lookup_or_create_outbound
-    struct nat_entry *e = nat_lookup_inbound(src_ip, src_port, dst_ip, dst_port, proto);
+    struct nat_entry *e = nat_lookup_inbound(src_ip, src_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
     if (!e) return;
 
     // update TCP connections status
-    // if ((e->int_fin==1)&&(e->ext_fin==1)&&(is_tcp_ack)&&(!is_tcp_fin)){
-    //     e->last_ack = 1;
-    // }
-    // if (is_tcp_fin) {
-    //     e->ext_fin = 1;
-    // }
-    // if (is_tcp_rst){
-    //     e->ext_fin = 1;
-    //     e->last_ack = 1;
-    //     e->int_fin = 1;
-    //     //printf("connection rst!\n");
-    // }
+    if (e->int_fin == 1 && e->ext_fin == 1 && is_tcp_ack && !is_tcp_fin) {
+        e->last_ack = 1;
+    }
+    if (is_tcp_fin) {
+        e->ext_fin = 1;
+    }
+    if (is_tcp_rst) {
+        e->ext_fin = 1;
+        e->last_ack = 1;
+        e->int_fin = 1;
+    }
 
     // translation:
     // TCP/UDP: dst_ip -> int_ip, dst_port -> int_port
@@ -505,8 +500,6 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
         assert(0 && "Unreachable");
     }
 
-    // TODO check rst for TCP
-
     struct sockaddr_in dst = {
         .sin_family = AF_INET,
         .sin_addr  = ip->ip_dst,
@@ -517,9 +510,6 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
                          0,
                          (struct sockaddr*)&dst,
                          sizeof(dst));
-    // if ((is_tcp_ack)||(is_tcp_rst)){
-    //     nat_lookup_and_remove(ip->ip_dst.s_addr, id_or_port, ip->ip_p, 1);
-    // }
     if (ret < 0) {
         if (errno == EMSGSIZE) {
             int mtu = int_if_info.mtu;
