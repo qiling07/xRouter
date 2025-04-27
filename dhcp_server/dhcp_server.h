@@ -110,9 +110,9 @@ void parse_dhcp_conf(struct dhcp_conf *conf){
     conf->start_ip = strdup("192.168.20.101");
     conf->end_ip = strdup("192.168.10.200");
     conf->pool_size = 100;
-    conf->lease_time = 60; // 600
-    conf->renew_time = 30; // 300
-    conf->rebinding_time = 50; // 525
+    conf->lease_time = 600; // 600
+    conf->renew_time = 300; // 300
+    conf->rebinding_time = 525; // 525
 }
 
 #endif

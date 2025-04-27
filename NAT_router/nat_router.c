@@ -281,9 +281,11 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
     }
     if ((e->int_fin==1)&&(e->ext_fin==1)&&(is_tcp_ack)&&(!is_tcp_fin)){
         e->last_ack = 1;
+        // printf("last ack!\n");
     }
     if (is_tcp_fin) {        
         e->int_fin = 1;
+        // printf("int fin!\n");
     }
 
 
@@ -441,6 +443,7 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
         return;
     if ((e->int_fin==1)&&(e->ext_fin==1)&&(is_tcp_ack)&&(!is_tcp_fin)){
         e->last_ack = 1;
+        // printf("last ack!\n");
     }
     if (is_tcp_fin) {
         e->ext_fin = 1;
@@ -449,7 +452,7 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
         e->ext_fin = 1;
         e->last_ack = 1;
         e->int_fin = 1;
-        //printf("connection rst!\n");
+        // printf("connection rst!\n");
     }
 
     // size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;

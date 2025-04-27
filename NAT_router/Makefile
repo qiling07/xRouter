@@ -15,7 +15,7 @@ clean:
 	rm -f $(TARGET) *.o
 
 config:
-	iptables -I INPUT -i enp0s8 -p tcp --dport 49152:65535 -j DROP
+	/usr/sbin/iptables -I INPUT -i enp0s3 -p tcp --dport 49152:65535 -j DROP
 
 tests: test-ping test-dns 
 	@echo "Running tests..."

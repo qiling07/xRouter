@@ -180,33 +180,35 @@ void nat_lookup_and_remove(uint32_t ip, uint16_t port, uint8_t proto, int revers
         pthread_rwlock_unlock(&nat_internal_rwlock);
         return;
     }
-    bool found_internal = false, found_external = false;
+
+    entry->ts_close = time(NULL);
+    // bool found_internal = false, found_external = false;
     
-    entry_count--;
-    // Remove from internal hash table\n
-    unsigned i_idx = hash_internal(entry->int_ip, entry->int_port, entry->proto);
-    struct nat_entry **pp = &nat_internal[i_idx];
-    while (*pp) {
-        if (*pp == entry) {
-            *pp = (*pp)->int_next;
-            found_internal = true;
-            break;
-        }
-        pp = &(*pp)->int_next;
-    }
-    // Remove from external hash table\n
-    unsigned ex_idx = hash_external(entry->ext_port, entry->proto);
-    struct nat_entry **qp = &nat_external[ex_idx];
-    while (*qp) {
-        if (*qp == entry) {
-            *qp = (*qp)->ext_next;
-            found_external = true;
-            break;
-        }
-        qp = &(*qp)->ext_next;
-    }
-    // Only decrement and free if we actually removed something
-    free(entry);
+    // entry_count--;
+    // // Remove from internal hash table\n
+    // unsigned i_idx = hash_internal(entry->int_ip, entry->int_port, entry->proto);
+    // struct nat_entry **pp = &nat_internal[i_idx];
+    // while (*pp) {
+    //     if (*pp == entry) {
+    //         *pp = (*pp)->int_next;
+    //         found_internal = true;
+    //         break;
+    //     }
+    //     pp = &(*pp)->int_next;
+    // }
+    // // Remove from external hash table\n
+    // unsigned ex_idx = hash_external(entry->ext_port, entry->proto);
+    // struct nat_entry **qp = &nat_external[ex_idx];
+    // while (*qp) {
+    //     if (*qp == entry) {
+    //         *qp = (*qp)->ext_next;
+    //         found_external = true;
+    //         break;
+    //     }
+    //     qp = &(*qp)->ext_next;
+    // }
+    // // Only decrement and free if we actually removed something
+    // free(entry);
 
     pthread_rwlock_unlock(&nat_external_rwlock);
     pthread_rwlock_unlock(&nat_internal_rwlock);
@@ -225,7 +227,7 @@ void nat_gc() {
                 pp = &(*pp)->int_next;
                 continue;
             }
-            if (now - (*pp)->ts > NAT_TTL) {
+            if ((now - (*pp)->ts > NAT_TTL) || (((*pp)->ts_close != 0) && (now - (*pp)->ts > 10))) {
                 entry_count--;
                 struct nat_entry *old = *pp;
                 *pp = old->int_next;

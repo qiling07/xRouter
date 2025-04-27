@@ -33,6 +33,7 @@ struct nat_entry {
     uint16_t ext_port;    // translated port / identifier
     uint8_t proto;        // IPPROTO_TCP / UDP / ICMP
     time_t ts;            // last activity
+    time_t ts_close = 0;            // last activity
     uint8_t ext_fin = 0;
     uint8_t int_fin = 0;
     uint8_t last_ack = 0;
