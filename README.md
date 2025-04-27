@@ -4,18 +4,17 @@ NAT router that forwards packets. Current support `ping` and UDP-based DNS query
 ```bash
 cd NAT_router
 make
+make config
 ./nat_router INTERFACE_INT INTERFACE_EXT
 ```
 
 Router manager client.
 ```bash
-gcc -Wall -O2 manager_client.c -o manager_client
-
 ./manager_client print
 
-./manager_client add facebook.com
+./manager_client add facebook.com 192.168.100.2
 
-./manager_client del facebook.com
+./manager_client del facebook.com 192.168.100.2
 
 ./manager_client show
 ```
@@ -23,14 +22,14 @@ gcc -Wall -O2 manager_client.c -o manager_client
 
 Create a DNS query and send to `8.8.8.8`
 ```bash
-cd DNS_test
+cd ../DNS_test
 make
 ./udp_dns_test
 ```
 
 Capture all packets listened.
 ```bash
-cd packet_sniffer
+cd ../packet_sniffer
 make
 ./packet
 ```
