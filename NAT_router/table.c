@@ -1,13 +1,11 @@
 #include "table.h"
 #include <pthread.h>
 
-
+size_t entry_count = 0;
 struct nat_entry *nat_internal[NAT_TABLE_SIZE] = {0};
 struct nat_entry *nat_external[NAT_TABLE_SIZE] = {0};
-pthread_rwlock_t nat_internal_rwlock = PTHREAD_RWLOCK_INITIALIZER;  // Initialize the lock
-pthread_rwlock_t nat_external_rwlock = PTHREAD_RWLOCK_INITIALIZER;  // Initialize the lock
-
-size_t entry_count = 0;
+pthread_rwlock_t nat_internal_rwlock = PTHREAD_RWLOCK_INITIALIZER;
+pthread_rwlock_t nat_external_rwlock = PTHREAD_RWLOCK_INITIALIZER;
 
 
 static inline unsigned hash_internal(uint32_t ip, uint16_t port, uint8_t proto) {
@@ -18,16 +16,11 @@ static inline unsigned hash_external(uint16_t port, uint8_t proto) {
     return ((port ^ proto) % NAT_TABLE_SIZE);
 }
 
-uint16_t random_port() {
-    return (rand() % (65535 - 49152)) + 49152;
-}
-
 uint16_t fix_port_range(uint16_t p) {
-    return (p % (65535 - 49152)) + 49152;
+    return (p % AVAILABLE_PORTS) + MIN_PORT;
 }
 
 struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reverse) {
-
     if (!reverse) {
         pthread_rwlock_rdlock(&nat_internal_rwlock);
         unsigned idx = hash_internal(ip, port, proto);
