@@ -125,20 +125,20 @@ static void print_usage(const char *prog) {
          snprintf(command, sizeof(command), "RESET_NAT_TABLE");
      }
      else if (strcmp(argv[1], "add") == 0) {
-         if (argc != 3) {
-             fprintf(stderr, "Error: 'add' requires a domain argument\n");
+         if (argc != 4) {
+             fprintf(stderr, "Error: 'add' requires a domain AND ip argument\n");
              print_usage(argv[0]);
              return EXIT_FAILURE;
          }
-         snprintf(command, sizeof(command), "ADD_FILTER %s", argv[2]);
+         snprintf(command, sizeof(command), "ADD_FILTER %s %s", argv[2], argv[3]);
      }
      else if (strcmp(argv[1], "del") == 0) {
-         if (argc != 3) {
-             fprintf(stderr, "Error: 'del' requires a domain argument\n");
+         if (argc != 4) {
+             fprintf(stderr, "Error: 'del' requires a domain AND ip argument\n");
              print_usage(argv[0]);
              return EXIT_FAILURE;
          }
-         snprintf(command, sizeof(command), "DEL_FILTER %s", argv[2]);
+         snprintf(command, sizeof(command), "DEL_FILTER %s %s", argv[2], argv[3]);
      }
     else if (strcmp(argv[1], "show") == 0) {
         snprintf(command, sizeof(command), "SHOW_FILTERS");

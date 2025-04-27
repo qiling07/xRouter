@@ -49,11 +49,7 @@ struct nat_entry {
 
     time_t ts;            // last activity
     int is_static;        // flag to indicate static port forwarding entry (no timeout)
-
     uint8_t tcp_status;
-    uint8_t ext_fin = 0;
-    uint8_t int_fin = 0;
-    uint8_t last_ack = 0;
 
     // Pointers for hash table chaining
     struct nat_entry *int_next;

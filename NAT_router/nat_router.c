@@ -105,20 +105,36 @@ void *admin_thread_func(void *arg) {
             }
         }
         else if (strncmp(admin_buf, "ADD_FILTER ", 11) == 0) {
-            char *domain = admin_buf + 11;
-            int r = filter_add(domain);
-            const char *resp = (r == 0)
-                ? "ADD_FILTER OK\n"
-                : "ADD_FILTER FAILED\n";
+            char domain[DOMAIN_MAX_LEN];
+            char ipstr[INET_ADDRSTRLEN];
+            int got = sscanf(admin_buf + 11, "%255s %15s", domain, ipstr);
+            char resp[100];
+            if (got == 2) {
+                int r = filter_add(domain, ipstr);
+                snprintf(resp, sizeof(resp),
+                        r == 0 ? "ADD_FILTER OK\n" : "ADD_FILTER FAILED\n");
+            } else {
+                snprintf(resp, sizeof(resp),
+                        "USAGE: ADD_FILTER <domain> <ip|*>\n");
+            }
             sendto(admin_fd, resp, strlen(resp), 0,
                 (struct sockaddr*)&client_addr, client_addr_len);
         }
         else if (strncmp(admin_buf, "DEL_FILTER ", 11) == 0) {
-            char *domain = admin_buf + 11;
-            int r = filter_del(domain);
-            const char *resp = (r == 0)
-                ? "DEL_FILTER OK\n"
-                : "DEL_FILTER FAILED\n";
+            char domain[DOMAIN_MAX_LEN];
+            char ipstr[INET_ADDRSTRLEN];
+            int got = sscanf(admin_buf + 11, "%255s %15s", domain, ipstr);
+            // printf("parsed domain = '%s', ipstr = '%s', got = %d\n", domain, ipstr, got);
+            char resp[100];
+            if (got == 2) {
+                int r = filter_del(domain, ipstr);
+                snprintf(resp, sizeof(resp),
+                        r == 0 ? "DEL_FILTER OK\n" : "DEL_FILTER FAILED\n");
+            } else {
+                // printf("got %d\n", got);
+                snprintf(resp, sizeof(resp),
+                        "USAGE: DEL_FILTER <domain> <ip|*>\n");
+            }
             sendto(admin_fd, resp, strlen(resp), 0,
                 (struct sockaddr*)&client_addr, client_addr_len);
         }
@@ -225,8 +241,9 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     // filter out abandoned traffic to certain dst_ip
     void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
     size_t l4_total_len = ntohs(ip->ip_len) - ip->ip_hl * 4;
-    if (filter_should_drop(ip->ip_p, l4, l4_total_len))
+    if (filter_should_drop(ip->ip_p, l4, l4_total_len, ip->ip_src.s_addr))
         return;
+
     
     // extract session identifer (src_ip, src_port, dst_ip, dst_port, proto) in host byte order
     // also zero out the l4 header checksum
@@ -278,13 +295,6 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     // time used for the binding is updated in nat_lookup_or_create_outbound
     struct nat_entry *e = nat_lookup_or_create_outbound(src_ip, src_port, dst_ip, dst_port, proto, ntohl(ext_if_info.ip_addr.s_addr), is_tcp_fin, is_tcp_ack, is_tcp_rst);
     assert(e != NULL);
-
-    if (e->int_fin == 1 && e->ext_fin == 1 && is_tcp_ack && !is_tcp_fin) {
-        e->last_ack = 1;
-    }
-    if (is_tcp_fin) {
-        e->int_fin = 1;
-    }
 
     // translation:
     // TCP/UDP: src_ip -> ext_ip, src_port -> ext_port
@@ -459,19 +469,6 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     // time used for the binding is updated in nat_lookup_or_create_outbound
     struct nat_entry *e = nat_lookup_inbound(src_ip, src_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
     if (!e) return;
-
-    // update TCP connections status
-    if (e->int_fin == 1 && e->ext_fin == 1 && is_tcp_ack && !is_tcp_fin) {
-        e->last_ack = 1;
-    }
-    if (is_tcp_fin) {
-        e->ext_fin = 1;
-    }
-    if (is_tcp_rst) {
-        e->ext_fin = 1;
-        e->last_ack = 1;
-        e->int_fin = 1;
-    }
 
     // translation:
     // TCP/UDP: dst_ip -> int_ip, dst_port -> int_port

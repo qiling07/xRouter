@@ -120,8 +120,20 @@ struct binding* release_ip(struct addr_pool *pool, uint32_t y_ip, const uint8_t 
     return NULL;
 }
 
-
 void release_addr_pool(struct addr_pool *pool){
     free(pool->bindings);
     free(pool);
+}
+
+struct binding* try_renew(struct addr_pool *pool, uint32_t ip, const uint8_t c_mac[6], uint32_t l_time){
+    for (int i = 0; i < pool->pool_size; i++)
+    {
+        if (ip == pool->bindings[i].ip && pool->bindings[i].is_leased == 1 
+            && memcmp(pool->bindings[i].mac, c_mac, 6) == 0)
+        {
+            pool->bindings[i].lease_time = l_time;
+            return &pool->bindings[i];
+        }
+    }
+    return NULL;
 }
