@@ -203,7 +203,7 @@ void *admin_thread_func(void *arg) {
 }
 
 
-void handle_internal_packet(unsigned char *buf, ssize_t n) {
+void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     // filter for outbound TCP/UPD/ICMP packets
     struct ether_header *eth = (struct ether_header *)buf;
     if (ntohs(eth->ether_type) != ETHERTYPE_IP)
@@ -248,8 +248,8 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
         l4_hdr_len = t->doff * 4;
         t->check = 0;
 
-        if (t->fin) is_tcp_fin = true;
-        if (t->ack) is_tcp_ack = true;
+        // if (t->fin) is_tcp_fin = true;
+        // if (t->ack) is_tcp_ack = true;
     } else if (proto == IPPROTO_UDP) {
         struct udphdr *u = l4;
         src_port = ntohs(u->source);
@@ -346,15 +346,15 @@ struct packet_data {
     unsigned char *data;
     ssize_t len;
 };
-void* packet_worker_func_internal(void *arg) {
+void* packet_worker_func_outbound(void *arg) {
     struct packet_data *pkt = arg;
-    handle_internal_packet(pkt->data, pkt->len);
+    handle_outbound_packet(pkt->data, pkt->len);
     free(pkt->data);
     free(pkt);
     return NULL;
 }
 
-void* internal_thread_func(void *arg) {
+void* thread_func_outbound(void *arg) {
     int raw_int = create_raw(int_if_info.name);
     struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
     setsockopt(raw_int, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -380,7 +380,7 @@ void* internal_thread_func(void *arg) {
         }
         p->data = pkt_copy;
         p->len = n;
-        if (pthread_create(&worker, &attr, packet_worker_func_internal, p) != 0) {
+        if (pthread_create(&worker, &attr, packet_worker_func_outbound, p) != 0) {
             free(pkt_copy);
             free(p);
         }
@@ -391,90 +391,118 @@ void* internal_thread_func(void *arg) {
     return NULL;
 }
 
-void handle_external_packet(unsigned char *buf, ssize_t n) {
+void handle_inbound_packet(unsigned char *buf, ssize_t n) {
+    // filter for inbound TCP/UPD/ICMP packets
     struct ether_header *eth = (struct ether_header *)buf;
     if (ntohs(eth->ether_type) != ETHERTYPE_IP)
         return;
     struct ip *ip = (struct ip *)(buf + sizeof(*eth));
-
-    if (checksum(ip, ip->ip_hl * 4) != 0) {
-        return;
-    }
-    if (is_public_address(ntohl(ip->ip_src.s_addr)) == 0) {
-        return;
-    }
-    if (ip->ip_dst.s_addr != ext_if_info.ip_addr.s_addr) {
-        return;
-    }
-    if (!(ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP || ip->ip_p == IPPROTO_ICMP)) {
-        return;
-    }
+    if (checksum(ip, ip->ip_hl * 4) != 0) return;
+    if (is_public_address(ntohl(ip->ip_src.s_addr)) == 0) return;
+    if (ip->ip_dst.s_addr != ext_if_info.ip_addr.s_addr) return;
     
-    void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
-    uint16_t id_or_port = 0;
-    size_t hdr_add = 0;
-    bool is_tcp_fin = false;
-    bool is_tcp_ack = false;
-    bool is_tcp_rst = false;
-    if (ip->ip_p == IPPROTO_TCP) {
-        struct tcphdr *t = l4;
-        id_or_port = ntohs(t->dest);
-        hdr_add = t->doff * 4;
-        if (t->fin) is_tcp_fin = true;
-        if (t->ack) is_tcp_ack = true;
-        if (t->rst) is_tcp_rst = true;
-        t->check = 0;
-    } else if (ip->ip_p == IPPROTO_UDP) {
-        struct udphdr *u = l4;
-        id_or_port = ntohs(u->dest);
-        hdr_add = sizeof(struct udphdr);
-        u->check = 0;
-    } else if (ip->ip_p == IPPROTO_ICMP) {
-        struct icmphdr *c = l4;
-        id_or_port = ntohs(c->un.echo.id);
-        hdr_add = sizeof(struct icmphdr);
-        c->checksum = 0;
+    if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {} 
+    else if (ip->ip_p == IPPROTO_ICMP) {
+        struct icmphdr *icmp = (struct icmphdr *)(buf + sizeof(*eth) + ip->ip_hl * 4);
+        if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {}
+        else return;
     } else {
         return;
     }
     
-    struct nat_entry *e = NULL;
-    // nat_lookup(ip->ip_dst.s_addr, id_or_port, ip->ip_p, 1);
+    void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
+    size_t l4_total_len = ntohs(ip->ip_len) - ip->ip_hl * 4;
+
+    // extract session identifer (src_ip, src_port, dst_ip, dst_port, proto) in host byte order
+    // also zero out the l4 header checksum
+    uint32_t src_ip = ntohl(ip->ip_src.s_addr);
+    uint32_t dst_ip = ntohl(ip->ip_dst.s_addr);
+    uint16_t src_port = 0;
+    uint16_t dst_port = 0;
+    uint8_t proto = ip->ip_p;
+
+    size_t l4_hdr_len = 0;
+    bool is_tcp_fin = false;
+    bool is_tcp_ack = false;
+    bool is_tcp_rst = false;
+
+    if (proto == IPPROTO_TCP) {
+        struct tcphdr *t = l4;
+        src_port = ntohs(t->source);
+        dst_port = ntohs(t->dest);
+
+        l4_hdr_len = t->doff * 4;
+        t->check = 0;
+
+        // if (t->fin) is_tcp_fin = true;
+        // if (t->ack) is_tcp_ack = true;
+        // if (t->rst) is_tcp_rst = true;
+    } else if (proto == IPPROTO_UDP) {
+        struct udphdr *u = l4;
+        src_port = ntohs(u->source);
+        dst_port = ntohs(u->dest);
+
+        l4_hdr_len = sizeof(struct udphdr); 
+        u->check = 0;
+    } else if (proto == IPPROTO_ICMP) {
+        struct icmphdr *icmp = l4;
+        if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
+            src_port = ntohs(icmp->un.echo.id);
+            dst_port = src_port;
+
+            l4_hdr_len = sizeof(struct icmphdr);
+            icmp->checksum = 0;
+        } else {
+            assert(0 && "Unreachable");
+        }
+    } else {
+        assert(0 && "Unreachable");
+    }
     
-    if (!e)
-        return;
-    if ((e->int_fin==1)&&(e->ext_fin==1)&&(is_tcp_ack)&&(!is_tcp_fin)){
-        e->last_ack = 1;
-    }
-    if (is_tcp_fin) {
-        e->ext_fin = 1;
-    }
-    if (is_tcp_rst){
-        e->ext_fin = 1;
-        e->last_ack = 1;
-        e->int_fin = 1;
-        //printf("connection rst!\n");
-    }
+    // find an existing binding
+    // time used for the binding is updated in nat_lookup_or_create_outbound
+    struct nat_entry *e = nat_lookup_inbound(src_ip, src_port, dst_ip, dst_port, proto);
+    if (!e) return;
 
+    // update TCP connections status
+    // if ((e->int_fin==1)&&(e->ext_fin==1)&&(is_tcp_ack)&&(!is_tcp_fin)){
+    //     e->last_ack = 1;
+    // }
+    // if (is_tcp_fin) {
+    //     e->ext_fin = 1;
+    // }
+    // if (is_tcp_rst){
+    //     e->ext_fin = 1;
+    //     e->last_ack = 1;
+    //     e->int_fin = 1;
+    //     //printf("connection rst!\n");
+    // }
 
-    e->ts = time(NULL);
-    ip->ip_dst.s_addr = e->int_ip;
-    if (ip->ip_p == IPPROTO_TCP) {
-        ((struct tcphdr *)l4)->dest = htons(e->int_port);
-    } else if (ip->ip_p == IPPROTO_UDP) {
-        ((struct udphdr *)l4)->dest = htons(e->int_port);
-    }
+    // translation:
+    // TCP/UDP: dst_ip -> int_ip, dst_port -> int_port
+    // ICMP: dst_ip -> int_ip, id -> int_port
+    // update checksum as well
+    ip->ip_dst.s_addr = htonl(e->int_ip);
     ip->ip_sum = 0;
     ip->ip_sum = checksum(ip, ip->ip_hl * 4);
-    size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
-    if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {
-        uint16_t cks = l4_checksum(ip, l4, l4len);
-        if (ip->ip_p == IPPROTO_TCP) {
-            ((struct tcphdr *)l4)->check = cks;
-        } else
-            ((struct udphdr *)l4)->check = cks;
-    } else if (ip->ip_p == IPPROTO_ICMP) {
-        ((struct icmphdr *)l4)->checksum = checksum(l4, l4len);
+    if (proto == IPPROTO_TCP) {
+        struct tcphdr *t = l4;
+        t->dest = htons(e->int_port);
+        t->check = l4_checksum(ip, l4, l4_total_len);
+    } else if (proto == IPPROTO_UDP) {
+        struct udphdr *u = l4;
+        u->dest = htons(e->int_port);
+        u->check = l4_checksum(ip, l4, l4_total_len);
+    } else if (proto == IPPROTO_ICMP) {
+        struct icmphdr *icmp = l4;
+        if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
+            icmp->un.echo.id = htons(e->int_port);
+            icmp->checksum = checksum(l4, l4_total_len);
+        } else {
+            assert(0 && "Unreachable");
+        }
+    } else {
+        assert(0 && "Unreachable");
     }
 
     // TODO check rst for TCP
@@ -508,15 +536,15 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
 
 }
 
-void* packet_worker_func_external(void *arg) {
+void* packet_worker_func_inbound(void *arg) {
     struct packet_data *pkt = arg;
-    handle_external_packet(pkt->data, pkt->len);
+    handle_inbound_packet(pkt->data, pkt->len);
     free(pkt->data);
     free(pkt);
     return NULL;
 }
 
-void* external_thread_func(void *arg) {
+void* thread_func_inbound(void *arg) {
     int raw_ext = create_raw(ext_if_info.name);
     struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
     setsockopt(raw_ext, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -541,7 +569,7 @@ void* external_thread_func(void *arg) {
         }
         p->data = pkt_copy;
         p->len = n;
-        if (pthread_create(&worker, &attr, packet_worker_func_external, p) != 0) {
+        if (pthread_create(&worker, &attr, packet_worker_func_inbound, p) != 0) {
             free(pkt_copy);
             free(p);
         }
@@ -637,13 +665,13 @@ int main(int argc, char *argv[]) {
     printf("Admin thread spawned.\n");
 
 
-    if (pthread_create(&internal_thread, NULL, internal_thread_func, NULL) != 0) {
+    if (pthread_create(&internal_thread, NULL, thread_func_outbound, NULL) != 0) {
         perror("Failed to create internal thread");
         exit(EXIT_FAILURE);
     }
     printf("Outward translation thread spawned.\n");
 
-    if (pthread_create(&external_thread, NULL, external_thread_func, NULL) != 0) {
+    if (pthread_create(&external_thread, NULL, thread_func_inbound, NULL) != 0) {
         perror("Failed to create external thread");
         exit(EXIT_FAILURE);
     }

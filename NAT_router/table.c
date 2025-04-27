@@ -95,6 +95,7 @@ struct nat_entry *nat_lookup_inbound(uint32_t src_ip, uint16_t src_port,
         // strict check for non-static bindings
         if ((src_ip == e->dst_ip && src_port == e->dst_port)
             || e->is_static) {
+            e->ts = time(NULL);
             pthread_rwlock_unlock(&nat_external_rwlock);
             return e;
         }
@@ -174,16 +175,6 @@ struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if
     pthread_rwlock_wrlock(&nat_external_rwlock);
 
     entry_count++;
-
-    // if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
-    //     uint16_t port;
-    //     do {
-    //         port = random_port();
-    //     } while (is_ext_port_taken(port, proto));
-    //     e->ext_port = port;
-    // } else {
-    //     e->ext_port = int_port;
-    // }
 
     if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
         uint16_t port = fix_port_range(int_port);
