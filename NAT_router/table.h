@@ -21,6 +21,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <stdbool.h>
+#include <assert.h>
+
 
 #define MIN_PORT 49152
 #define MAX_PORT 65535
@@ -61,10 +64,16 @@ extern struct nat_entry *nat_internal[NAT_TABLE_SIZE];
 extern struct nat_entry *nat_external[NAT_TABLE_SIZE];
 
 
-int is_ext_port_taken(uint16_t ext_port, uint8_t proto);
-struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reverse);
-struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint8_t proto);
-void nat_lookup_and_remove(uint32_t ip, uint16_t port, uint8_t proto, int reverse);
+// struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reverse);
+// struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint8_t proto);
+// void nat_lookup_and_remove(uint32_t ip, uint16_t port, uint8_t proto, int reverse);
+
+struct nat_entry *nat_lookup_outbound(uint32_t src_ip, uint16_t src_port, 
+                                    uint32_t dst_ip, uint16_t dst_port, uint8_t proto);
+struct nat_entry *nat_lookup_inbound(uint32_t src_ip, uint16_t src_port, 
+                                    uint32_t dst_ip, uint16_t dst_port, uint8_t proto);
+struct nat_entry *nat_lookup_or_create_outbound(uint32_t src_ip, uint16_t src_port, 
+                                        uint32_t dst_ip, uint16_t dst_port, uint8_t proto, uint32_t ext_if_ip);
 
 void nat_gc();
 void nat_reset();

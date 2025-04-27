@@ -20,6 +20,17 @@ uint16_t fix_port_range(uint16_t p) {
     return (p % AVAILABLE_PORTS) + MIN_PORT;
 }
 
+// before calling this function, make sure to lock the nat_external_rwlock
+bool is_ext_port_taken(uint16_t ext_port, uint8_t proto) {
+    unsigned idx = hash_external(ext_port, proto);
+    for (struct nat_entry *e = nat_external[idx]; e; e = e->ext_next) {
+        if (e->ext_port == ext_port && e->proto == proto) {
+            return true;
+        }
+    }
+    return false;
+}
+
 struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reverse) {
     if (!reverse) {
         pthread_rwlock_rdlock(&nat_internal_rwlock);
@@ -45,16 +56,108 @@ struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reve
     return NULL;
 }
 
-int is_ext_port_taken(uint16_t ext_port, uint8_t proto) {
-    unsigned idx = hash_external(ext_port, proto);
-    for (struct nat_entry *e = nat_external[idx]; e; e = e->ext_next) {
-        if (e->ext_port == ext_port && e->proto == proto) {
-            return 1;
+struct nat_entry *nat_lookup_outbound(uint32_t src_ip, uint16_t src_port, 
+    uint32_t dst_ip, uint16_t dst_port, uint8_t proto) 
+{
+    unsigned idx = hash_internal(src_ip, src_port, proto);
+
+    pthread_rwlock_rdlock(&nat_internal_rwlock);
+    for (struct nat_entry *e = nat_internal[idx]; e; e = e->int_next) {
+        // loose check
+        if (src_ip == e->int_ip && src_port == e->int_port 
+            && proto == e->proto) {} 
+        else continue;
+
+        // strict check for non-static bindings
+        if ((dst_ip == e->dst_ip && dst_port == e->dst_port)
+            || e->is_static) {
+            e->ts = time(NULL);
+            pthread_rwlock_unlock(&nat_internal_rwlock);
+            return e;
         }
     }
-    
-    return 0;
+    pthread_rwlock_unlock(&nat_internal_rwlock);
+    return NULL;
 }
+
+struct nat_entry *nat_lookup_inbound(uint32_t src_ip, uint16_t src_port, 
+    uint32_t dst_ip, uint16_t dst_port, uint8_t proto) 
+{
+    unsigned idx = hash_external(dst_port, proto);
+
+    pthread_rwlock_rdlock(&nat_external_rwlock);
+    for (struct nat_entry *e = nat_external[idx]; e; e = e->ext_next) {
+        // loose check
+        if (dst_ip == e->ext_ip && dst_port == e->ext_port
+            && proto == e->proto) {}
+        else continue;
+        
+        // strict check for non-static bindings
+        if ((src_ip == e->dst_ip && src_port == e->dst_port)
+            || e->is_static) {
+            pthread_rwlock_unlock(&nat_external_rwlock);
+            return e;
+        }
+    }
+    pthread_rwlock_unlock(&nat_external_rwlock);
+    return NULL;
+}
+
+struct nat_entry *nat_create_binding(uint32_t src_ip, uint16_t src_port, 
+    uint32_t dst_ip, uint16_t dst_port, uint8_t proto, uint32_t ext_if_ip) 
+{
+    assert(entry_count < NAT_TABLE_SIZE && "TODO: NAT table is full");
+    
+    struct nat_entry * e = (struct nat_entry *)calloc(1, sizeof(*e));
+    assert(e != NULL);
+
+    // initialize the new entry
+    e->int_ip = src_ip;
+    e->int_port = src_port;
+    e->dst_ip = dst_ip;
+    e->dst_port = dst_port;
+    e->proto = proto;
+
+
+    pthread_rwlock_wrlock(&nat_internal_rwlock);
+    pthread_rwlock_wrlock(&nat_external_rwlock);
+    
+    e->ext_ip = ext_if_ip;
+    e->ext_port = fix_port_range(dst_port);
+    while (is_ext_port_taken(e->ext_port, proto)) {
+        e->ext_port = fix_port_range(e->ext_port + 1);
+    }
+    e->ts = time(NULL);
+    e->is_static = 0;
+
+    // Insert into internal hash table
+    unsigned i_idx = hash_internal(src_ip, src_port, proto);
+    e->int_next = nat_internal[i_idx];
+    nat_internal[i_idx] = e;
+
+    // Insert into external hash table\n
+    unsigned e_idx = hash_external(e->ext_port, proto);
+    e->ext_next = nat_external[e_idx];
+    nat_external[e_idx] = e;
+
+    entry_count++;
+    pthread_rwlock_unlock(&nat_external_rwlock);
+    pthread_rwlock_unlock(&nat_internal_rwlock);
+
+    return e;
+}
+
+struct nat_entry *nat_lookup_or_create_outbound(uint32_t src_ip, uint16_t src_port, 
+    uint32_t dst_ip, uint16_t dst_port, uint8_t proto, uint32_t ext_if_ip) 
+{
+    struct nat_entry *e = nat_lookup_outbound(src_ip, src_port, dst_ip, dst_port, proto);
+    if (e) return e;
+
+    // If not found, create a new entry
+    e = nat_create_binding(src_ip, src_port, dst_ip, dst_port, proto, ext_if_ip);
+    return e; 
+}
+
 
 struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint8_t proto) {
     struct nat_entry *e = (struct nat_entry *)calloc(1, sizeof(*e));
@@ -111,7 +214,7 @@ struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if
     return e;
 }
 
-static void nat_remove(struct nat_entry *e) {
+int nat_remove(struct nat_entry *e) {
     pthread_rwlock_wrlock(&nat_internal_rwlock);
     pthread_rwlock_wrlock(&nat_external_rwlock);
 
@@ -218,6 +321,9 @@ void nat_gc() {
                 pp = &(*pp)->int_next;
                 continue;
             }
+            // TODO: handle different situations
+            // 1. closed TCP
+            // 2. long-idle TCP/UDP/ICMP
             if (now - (*pp)->ts > NAT_TTL) {
                 entry_count--;
                 struct nat_entry *old = *pp;
@@ -243,26 +349,32 @@ void nat_gc() {
 }
 
 // Create a static port forwarding entry that will not time out
+// all inputs should be in host byte order
 struct nat_entry *nat_add_port_forward(uint32_t int_ip, uint16_t int_port,
                                        uint32_t ext_if_ip, uint16_t ext_port,
                                        uint8_t proto) {
     pthread_rwlock_wrlock(&nat_internal_rwlock);
     pthread_rwlock_wrlock(&nat_external_rwlock);
-    if (is_ext_port_taken(ext_port, proto) || ext_port < 49152 || ext_port > 65535) {
+    if (is_ext_port_taken(ext_port, proto) || ext_port < MIN_PORT || ext_port > MAX_PORT) {
         pthread_rwlock_unlock(&nat_external_rwlock);
         pthread_rwlock_unlock(&nat_internal_rwlock);
         return NULL;
     }
     
     struct nat_entry *e = (struct nat_entry *)calloc(1, sizeof(*e));
-    if (!e)
-        return NULL;
+    assert(e != NULL);
+    
     e->int_ip = int_ip;
     e->int_port = int_port;
+    
+    e->dst_ip = 0;
+    e->dst_port = 0;
+    
     e->ext_ip = ext_if_ip;
     e->ext_port = ext_port;
+    
     e->proto = proto;
-    e->ts = time(NULL);
+    e->ts = time(NULL);    
     e->is_static = 1;
 
     entry_count++;
@@ -283,6 +395,7 @@ struct nat_entry *nat_add_port_forward(uint32_t int_ip, uint16_t int_port,
     return e;
 }
 
+// all inputs should be in host byte order
 int nat_delete_port_forward(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint16_t ext_port, uint8_t proto) {
     pthread_rwlock_wrlock(&nat_internal_rwlock);
     pthread_rwlock_wrlock(&nat_external_rwlock);
@@ -333,61 +446,7 @@ int nat_delete_port_forward(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_
     return 0;
 }
 
-void print_nat_table(int static_only = 0) {
-    printf("NAT Table:\n");
-    printf("--------------------------------------------------------------------------------\n");
-    // Added a “Static” column before Last Activity
-    printf("%-15s %-8s %-15s %-8s %-8s %-8s %-20s\n",
-           "Internal IP", "Iport", "External IP", "Eport",
-           "Proto",       "Static", "Last Activity");
-
-    pthread_rwlock_rdlock(&nat_internal_rwlock);
-    for (int i = 0; i < NAT_TABLE_SIZE; i++) {
-        for (struct nat_entry *e = nat_internal[i]; e; e = e->int_next) {
-            // If user requested only static entries, skip non-static ones
-            if (static_only && !e->is_static) 
-                continue;
-
-            char internal_ip_str[INET_ADDRSTRLEN];
-            char external_ip_str[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, &e->int_ip, internal_ip_str, sizeof(internal_ip_str));
-            inet_ntop(AF_INET, &e->ext_ip, external_ip_str, sizeof(external_ip_str));
-
-            // Proto string
-            char proto_str[6];
-            if (e->proto == IPPROTO_TCP)      strcpy(proto_str, "TCP");
-            else if (e->proto == IPPROTO_UDP) strcpy(proto_str, "UDP");
-            else if (e->proto == IPPROTO_ICMP)strcpy(proto_str, "ICMP");
-            else                               snprintf(proto_str, sizeof(proto_str), "%u", e->proto);
-
-            // Static flag
-            const char *static_str = e->is_static ? "yes" : "no";
-
-            // Last activity timestamp
-            char time_buf[20];
-            struct tm *tm_info = localtime(&e->ts);
-            if (tm_info)
-                strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
-            else
-                strcpy(time_buf, "N/A");
-
-            // Print row with the new Static column
-            printf("%-15s %-8u %-15s %-8u %-8s %-8s %-20s\n",
-                   internal_ip_str,
-                   ntohs(e->int_port),
-                   external_ip_str,
-                   ntohs(e->ext_port),
-                   proto_str,
-                   static_str,
-                   time_buf);
-        }
-    }
-    pthread_rwlock_unlock(&nat_internal_rwlock);
-
-    printf("--------------------------------------------------------------------------------\n");
-}
-
-void get_nat_table_string(char *buf, size_t bufsize, int static_only = 0) {
+void get_nat_table_string(char *buf, size_t bufsize, int static_only) {
     int offset = 0;
     offset += snprintf(buf + offset, bufsize - offset, "NAT Table:\n");
     offset += snprintf(buf + offset, bufsize - offset, "--------------------------------------------------------------------------------\n");
@@ -401,10 +460,16 @@ void get_nat_table_string(char *buf, size_t bufsize, int static_only = 0) {
                 continue;
             char internal_ip_str[INET_ADDRSTRLEN];
             char external_ip_str[INET_ADDRSTRLEN];
-            if (inet_ntop(AF_INET, &(e->int_ip), internal_ip_str, INET_ADDRSTRLEN) == NULL) {
+            // if (inet_ntop(AF_INET, &(e->int_ip), internal_ip_str, INET_ADDRSTRLEN) == NULL) {
+            //     strcpy(internal_ip_str, "N/A");
+            // }
+            // if (inet_ntop(AF_INET, &(e->ext_ip), external_ip_str, INET_ADDRSTRLEN) == NULL) {
+            //     strcpy(external_ip_str, "N/A");
+            // }
+            if (inet_ntop(AF_INET, &(uint32_t){ htonl(e->int_ip) }, internal_ip_str, INET_ADDRSTRLEN) == NULL) {
                 strcpy(internal_ip_str, "N/A");
             }
-            if (inet_ntop(AF_INET, &(e->ext_ip), external_ip_str, INET_ADDRSTRLEN) == NULL) {
+            if (inet_ntop(AF_INET, &(uint32_t){ htonl(e->ext_ip) }, external_ip_str, INET_ADDRSTRLEN) == NULL) {
                 strcpy(external_ip_str, "N/A");
             }
             char proto_str[10];
@@ -437,6 +502,12 @@ void get_nat_table_string(char *buf, size_t bufsize, int static_only = 0) {
     pthread_rwlock_unlock(&nat_internal_rwlock);
 
     snprintf(buf + offset, bufsize - offset, "--------------------------------------------------------------------------------\n");
+}
+
+void print_nat_table(int static_only) {
+    char buf[16384];
+    get_nat_table_string(buf, sizeof(buf), static_only);
+    printf("%s", buf);
 }
 
 // Clear all NAT entries and reset the table

@@ -41,11 +41,12 @@ interface_info int_if_info, ext_if_info;
 int outward_sock = -1;
 int inward_sock = -1;
 
+// sent, received, stored in network byte order
 typedef struct {
     uint32_t int_ip;
     uint16_t int_port;
     uint16_t ext_port;
-} port_forward_info;
+} port_forward_info;        
 
 /* Admin thread function to handle NAT table requests via UDP */
 void *admin_thread_func(void *arg) {
@@ -136,10 +137,10 @@ void *admin_thread_func(void *arg) {
                 snprintf(resp, sizeof(resp), "PORT_FORWARD FAILED: Invalid internal IP %s\n", 
                     inet_ntoa(*(struct in_addr*)&request->int_ip));
             } else if (NULL == nat_add_port_forward(
-                request->int_ip, ntohs(request->int_port),
-                ext_if_info.ip_addr.s_addr, ntohs(request->ext_port),
+                ntohl(request->int_ip), ntohs(request->int_port),
+                ntohl(ext_if_info.ip_addr.s_addr), ntohs(request->ext_port),
                 IPPROTO_TCP)) {
-                snprintf(resp, sizeof(resp), "PORT_FORWARD FAILED: Port already in use\n");
+                snprintf(resp, sizeof(resp), "PORT_FORWARD FAILED: Port invalid or already in use\n");
             } else {
                 snprintf(resp, sizeof(resp), "PORT_FORWARD OK: %s:%d -> %d\n",
                     inet_ntoa(*(struct in_addr*)&request->int_ip),
@@ -152,8 +153,8 @@ void *admin_thread_func(void *arg) {
         else if (strncmp(admin_buf, "DEL_FORWARD ", 12) == 0) {
             port_forward_info *request = (port_forward_info*)((uintptr_t)admin_buf + 12);
             char resp[100];
-            int r = nat_delete_port_forward(request->int_ip, ntohs(request->int_port), 
-                ext_if_info.ip_addr.s_addr, ntohs(request->ext_port), 
+            int r = nat_delete_port_forward(ntohl(request->int_ip), ntohs(request->int_port), 
+                ntohl(ext_if_info.ip_addr.s_addr), ntohs(request->ext_port), 
                 IPPROTO_TCP);
             if (r == 0) {
                 snprintf(resp, sizeof(resp), "DEL_FORWARD OK: %s:%d -> %d\n",
@@ -203,84 +204,114 @@ void *admin_thread_func(void *arg) {
 
 
 void handle_internal_packet(unsigned char *buf, ssize_t n) {
+    // filter for outbound TCP/UPD/ICMP packets
     struct ether_header *eth = (struct ether_header *)buf;
     if (ntohs(eth->ether_type) != ETHERTYPE_IP)
         return;
     struct ip *ip = (struct ip *)(buf + sizeof(*eth));
-    if (checksum(ip, ip->ip_hl * 4) != 0) {
-        return;
-    }
-    if (is_host_address(ntohl(ip->ip_src.s_addr), &int_if_info) == 0) {
-        return;
-    }
-    if (is_public_address(ntohl(ip->ip_dst.s_addr)) == 0) {
-        return;
-    }
-    if (!(ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP || ip->ip_p == IPPROTO_ICMP)) {
-        return;
-    }
+    if (checksum(ip, ip->ip_hl * 4) != 0) return;
+    if (is_host_address(ntohl(ip->ip_src.s_addr), &int_if_info) == 0) return;
+    if (is_public_address(ntohl(ip->ip_dst.s_addr)) == 0) return;
     
+    if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {} 
+    else if (ip->ip_p == IPPROTO_ICMP) {
+        struct icmphdr *icmp = (struct icmphdr *)(buf + sizeof(*eth) + ip->ip_hl * 4);
+        if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {}
+        else return;
+    } else {
+        return;
+    }
+
+    // filter out abandoned traffic to certain dst_ip
     void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
-    uint16_t id_or_port = 0;
-    size_t hdr_add = 0;
+    size_t l4_total_len = ntohs(ip->ip_len) - ip->ip_hl * 4;
+    if (filter_should_drop(ip->ip_p, l4, l4_total_len))
+        return;
+    
+    // extract session identifer (src_ip, src_port, dst_ip, dst_port, proto) in host byte order
+    // also zero out the l4 header checksum
+    uint32_t src_ip = ntohl(ip->ip_src.s_addr);
+    uint32_t dst_ip = ntohl(ip->ip_dst.s_addr);
+    uint16_t src_port = 0;
+    uint16_t dst_port = 0;
+    uint8_t proto = ip->ip_p;
+    
+    size_t l4_hdr_len = 0;
     bool is_tcp_fin = false;
     bool is_tcp_ack = false;
 
-    if (ip->ip_p == IPPROTO_TCP) {
+    if (proto == IPPROTO_TCP) {
         struct tcphdr *t = l4;
-        id_or_port = ntohs(t->source);
-        hdr_add = t->doff * 4;
+        src_port = ntohs(t->source);
+        dst_port = ntohs(t->dest);
+
+        l4_hdr_len = t->doff * 4;
+        t->check = 0;
+
         if (t->fin) is_tcp_fin = true;
         if (t->ack) is_tcp_ack = true;
-        t->check = 0;
-    } else if (ip->ip_p == IPPROTO_UDP) {
+    } else if (proto == IPPROTO_UDP) {
         struct udphdr *u = l4;
-        id_or_port = ntohs(u->source);
-        hdr_add = sizeof(struct udphdr);
+        src_port = ntohs(u->source);
+        dst_port = ntohs(u->dest);
+
+        l4_hdr_len = sizeof(struct udphdr); 
         u->check = 0;
-    } else if (ip->ip_p == IPPROTO_ICMP) {
+    } else if (proto == IPPROTO_ICMP) {
         struct icmphdr *icmp = l4;
-        id_or_port = ntohs(*(uint16_t *)(l4 + 4));
-        hdr_add = sizeof(struct icmphdr);
-        icmp->checksum = 0;
-    }
+        if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
+            src_port = ntohs(icmp->un.echo.id);
+            dst_port = src_port;
 
-    size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
-    if (filter_should_drop(ip->ip_p, l4, l4len))
-        return;
+            l4_hdr_len = sizeof(struct icmphdr);
+            icmp->checksum = 0;
+        } else {
+            assert(0 && "Unreachable");
+        }
+    } else {
+        assert(0 && "Unreachable");
+    }
     
-    struct nat_entry *e = nat_lookup(ip->ip_src.s_addr, id_or_port, ip->ip_p, 0);
+    // detect start of session -- if so, create a new binding; otherwise, use the existing binding
+    // time used for the binding is updated in nat_lookup_or_create_outbound
+    struct nat_entry *e = nat_lookup_or_create_outbound(src_ip, src_port, dst_ip, dst_port, proto, ntohl(ext_if_info.ip_addr.s_addr));
+    assert(e != NULL);
     
-    if (!e) {
-        e = nat_create(ip->ip_src.s_addr, id_or_port, ext_if_info.ip_addr.s_addr, ip->ip_p);
-    }
-    if ((e->int_fin==1)&&(e->ext_fin==1)&&(is_tcp_ack)&&(!is_tcp_fin)){
-        e->last_ack = 1;
-    }
-    if (is_tcp_fin) {        
-        e->int_fin = 1;
-    }
+    // if ((e->int_fin==1)&&(e->ext_fin==1)&&(is_tcp_ack)&&(!is_tcp_fin)){
+    //     e->last_ack = 1;
+    // }
+    // if (is_tcp_fin) {        
+    //     e->int_fin = 1;
+    // }
 
 
-    e->ts = time(NULL);
-    ip->ip_src.s_addr = e->ext_ip;
-    if (ip->ip_p == IPPROTO_TCP) {
-        ((struct tcphdr *)l4)->source = htons(e->ext_port);
-    } else if (ip->ip_p == IPPROTO_UDP) {
-        ((struct udphdr *)l4)->source = htons(e->ext_port);
-    }
+    // translation:
+    // TCP/UDP: src_ip -> ext_ip, src_port -> ext_port
+    // ICMP: src_ip -> ext_ip, id -> ext_port
+    // update checksum as well
+    ip->ip_src.s_addr = htonl(e->ext_ip);
     ip->ip_sum = 0;
     ip->ip_sum = checksum(ip, ip->ip_hl * 4);
-    // size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
-    if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {
-        uint16_t cks = l4_checksum(ip, l4, l4len);
-        if (ip->ip_p == IPPROTO_TCP)
-            ((struct tcphdr *)l4)->check = cks;
-        else
-            ((struct udphdr *)l4)->check = cks;
-    } else if (ip->ip_p == IPPROTO_ICMP) {
-        ((struct icmphdr *)l4)->checksum = checksum(l4, l4len);
+    if (proto == IPPROTO_TCP) {
+        struct tcphdr *t = l4;
+        t->source = htons(e->ext_port);
+        t->check = l4_checksum(ip, l4, l4_total_len);
+    } else if (proto == IPPROTO_UDP) {
+        struct udphdr *u = l4;
+        u->source = htons(e->ext_port);
+        u->check = l4_checksum(ip, l4, l4_total_len);
+    } else if (proto == IPPROTO_ICMP) {
+        struct icmphdr *icmp = l4;
+        if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
+            icmp->un.echo.id = htons(e->ext_port);
+            icmp->checksum = checksum(l4, l4_total_len);
+        } else {
+            assert(0 && "Unreachable");
+        }
+    } else {
+        assert(0 && "Unreachable");
     }
+
     // TODO: check rst for TCP
 
     struct sockaddr_in dst = {
@@ -307,9 +338,9 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
             print_tcpdump_packet(ip, ext_if_info.name);
         }
     }
-    if (is_tcp_ack) {
-        nat_lookup_and_remove(ip->ip_src.s_addr, id_or_port, ip->ip_p, 0);
-    }
+    // if (is_tcp_ack) {
+    //     nat_lookup_and_remove(ip->ip_src.s_addr, src_port, ip->ip_p, 0);
+    // }
 }
 struct packet_data {
     unsigned char *data;
@@ -349,9 +380,6 @@ void* internal_thread_func(void *arg) {
         }
         p->data = pkt_copy;
         p->len = n;
-
-
-
         if (pthread_create(&worker, &attr, packet_worker_func_internal, p) != 0) {
             free(pkt_copy);
             free(p);
@@ -410,7 +438,8 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
         return;
     }
     
-    struct nat_entry *e = nat_lookup(ip->ip_dst.s_addr, id_or_port, ip->ip_p, 1);
+    struct nat_entry *e = NULL;
+    // nat_lookup(ip->ip_dst.s_addr, id_or_port, ip->ip_p, 1);
     
     if (!e)
         return;
@@ -460,9 +489,9 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
                          0,
                          (struct sockaddr*)&dst,
                          sizeof(dst));
-    if ((is_tcp_ack)||(is_tcp_rst)){
-        nat_lookup_and_remove(ip->ip_dst.s_addr, id_or_port, ip->ip_p, 1);
-    }
+    // if ((is_tcp_ack)||(is_tcp_rst)){
+    //     nat_lookup_and_remove(ip->ip_dst.s_addr, id_or_port, ip->ip_p, 1);
+    // }
     if (ret < 0) {
         if (errno == EMSGSIZE) {
             int mtu = int_if_info.mtu;
@@ -542,7 +571,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s <int_if> <ext_if>\n", argv[0]);
         return 1;
     }
-    srand(time(NULL));
     filter_init();
 
     signal(SIGINT, cleanup);
