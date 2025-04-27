@@ -36,8 +36,21 @@ void process_dhcp_discover(struct dhcp_server *server, struct dhcp_packet *packe
     // set `OC_SERVER_ID`
     reply->options[options_ofst++] = (uint8_t)OC_SERVER_ID;
     reply->options[options_ofst++] = 4;
-    inet_pton(AF_INET, server->conf.ip, &(reply->options[options_ofst]));
+    inet_pton(AF_INET, server->conf.ip_addr, &(reply->options[options_ofst]));
     options_ofst += 4;
+
+    reply->options[options_ofst++] = OC_LEASE_TIME;
+    reply->options[options_ofst++] = 4;
+    uint32_t lease_time_nbo = htonl(server->conf.lease_time);
+    memcpy(&reply->options[options_ofst], &lease_time_nbo, 4);
+    options_ofst += 4;
+
+    reply->options[options_ofst++] = OC_RENEWAL_TIME;
+    reply->options[options_ofst++] = 4;
+    uint32_t renew_time_nbo = htonl(server->conf.renew_time);
+    memcpy(&reply->options[options_ofst], &renew_time_nbo, 4);
+    options_ofst += 4;
+
     // set parameters according to the parameter request list
     struct option_tlv *parameters_tlv = get_option_tlv(options, OC_PARAMETER_LIST);
     for (int i = 0; i < parameters_tlv->len; ++i)
@@ -76,18 +89,18 @@ void process_dhcp_discover(struct dhcp_server *server, struct dhcp_packet *packe
             inet_pton(AF_INET, server->conf.dns_ip, &(reply->options[options_ofst]));
             options_ofst += 4;
             break;
-        case OC_LEASE_TIME:
-            reply->options[options_ofst++] = parameters_tlv->value[i];
-            reply->options[options_ofst++] = 4;
-            memcpy(&reply->options[options_ofst], &server->conf.lease_time, 4);
-            options_ofst += 4;
-            break;
-        case OC_RENEWAL_TIME:
-            reply->options[options_ofst++] = parameters_tlv->value[i];
-            reply->options[options_ofst++] = 4;
-            memcpy(&reply->options[options_ofst], &server->conf.renew_time, 4);
-            options_ofst += 4;
-            break;
+        // case OC_LEASE_TIME:
+        //     reply->options[options_ofst++] = parameters_tlv->value[i];
+        //     reply->options[options_ofst++] = 4;
+        //     memcpy(&reply->options[options_ofst], &server->conf.lease_time, 4);
+        //     options_ofst += 4;
+        //     break;
+        // case OC_RENEWAL_TIME:
+        //     reply->options[options_ofst++] = parameters_tlv->value[i];
+        //     reply->options[options_ofst++] = 4;
+        //     memcpy(&reply->options[options_ofst], &server->conf.renew_time, 4);
+        //     options_ofst += 4;
+        //     break;
         case OC_REBINDING_TIME:
             reply->options[options_ofst++] = parameters_tlv->value[i];
             reply->options[options_ofst++] = 4;
@@ -103,12 +116,13 @@ void process_dhcp_discover(struct dhcp_server *server, struct dhcp_packet *packe
     *len = DHCP_HEADER_SIZE + options_ofst;
 }
 
-void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet, struct option_list *options, struct dhcp_packet *reply, size_t *len){
-    // check wether the server is selected
-    uint8_t server_id[4];
-    inet_pton(AF_INET, server->conf.ip, server_id);
+void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet, struct option_list *options, struct dhcp_packet *reply, size_t *len, uint8_t *send_packet){
+    // check wether the server is selectsed
     struct option_tlv* server_id_tlv = get_option_tlv(options, OC_SERVER_ID);
-    if (memcmp(server_id, server_id_tlv->value, 4) == 0)
+    struct in_addr ip_addr;
+    inet_pton(AF_INET, server->conf.ip_addr, &ip_addr);
+    // FIXME: patch for renewal
+    if (server_id_tlv == NULL || server_id_tlv != NULL && memcmp(&(ip_addr.s_addr), server_id_tlv->value, 4) == 0)
     {
         // is selected
         // commit the binding
@@ -129,28 +143,66 @@ void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet
             uint32_t options_ofst = MAGIC_COOKIE_SIZE;
             reply->options[options_ofst++] = (uint8_t)OC_MESSAGE_TYPE;
             reply->options[options_ofst++] = 1;
-            // get option 50 (OC_REQUESTED_IP)
-            struct option_tlv* requesr_ip_tlv = get_option_tlv(options, OC_REQUESTED_IP);
-            uint32_t request_ip;
-            memcpy(&request_ip, requesr_ip_tlv->value, 4);
-            struct binding *b = allocate_ip(server->pool, ntohl(request_ip), packet->chaddr, server->conf.lease_time);
+
+            uint32_t request_ip; // network order
+            struct binding *b;
+            // for renewal
+            if (server_id_tlv == NULL)
+            {
+                // In a renew request, the request_ip is the ciaddr 
+                request_ip = packet->ciaddr;
+                b = try_renew(server->pool, ntohl(packet->ciaddr), packet->chaddr, server->conf.lease_time);
+                if (b)
+                {
+                    struct in_addr addr;
+                    char ip_str[INET_ADDRSTRLEN];
+                    addr.s_addr = packet->ciaddr;
+                    inet_ntop(AF_INET, &addr, ip_str, INET_ADDRSTRLEN);
+                    printf("Successfully renew ip %s\n", ip_str);
+                }
+            }
+            else
+            {
+                // renew request do not have OC_REQUESTED_IP
+                // get option 50 (OC_REQUESTED_IP)
+                struct option_tlv* requesr_ip_tlv = get_option_tlv(options, OC_REQUESTED_IP);
+                memcpy(&request_ip, requesr_ip_tlv->value, 4);
+                b = allocate_ip(server->pool, ntohl(request_ip), packet->chaddr, server->conf.lease_time);
+            }
+
             if (b == NULL)
             {
                 // send NAK
                 printf("send NAK\n");
+                *send_packet = 1;
                 reply->options[options_ofst++] = (uint8_t)MTC_DHCPNAK;
             }
             else {
                 // send ACK
                 printf("send ACK\n");
+                *send_packet = 1;
                 reply->yiaddr = request_ip;
                 reply->options[options_ofst++] = (uint8_t)MTC_DHCPACK;
             }
+
             // set `OC_SERVER_ID`
             reply->options[options_ofst++] = (uint8_t)OC_SERVER_ID;
             reply->options[options_ofst++] = 4;
-            inet_pton(AF_INET, server->conf.ip, &(reply->options[options_ofst]));
+            inet_pton(AF_INET, server->conf.ip_addr, &(reply->options[options_ofst]));
             options_ofst += 4;
+
+            reply->options[options_ofst++] = OC_LEASE_TIME;
+            reply->options[options_ofst++] = 4;
+            uint32_t lease_time_nbo = htonl(server->conf.lease_time);
+            memcpy(&reply->options[options_ofst], &lease_time_nbo, 4);
+            options_ofst += 4;
+
+            reply->options[options_ofst++] = OC_RENEWAL_TIME;
+            reply->options[options_ofst++] = 4;
+            uint32_t renew_time_nbo = htonl(server->conf.renew_time);
+            memcpy(&reply->options[options_ofst], &renew_time_nbo, 4);
+            options_ofst += 4;
+                    
             // TODO: refactor code
             struct option_tlv *parameters_tlv = get_option_tlv(options, OC_PARAMETER_LIST);
             for (int i = 0; i < parameters_tlv->len; ++i)
@@ -189,18 +241,18 @@ void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet
                     inet_pton(AF_INET, server->conf.dns_ip, &(reply->options[options_ofst]));
                     options_ofst += 4;
                     break;
-                case OC_LEASE_TIME:
-                    reply->options[options_ofst++] = parameters_tlv->value[i];
-                    reply->options[options_ofst++] = 4;
-                    memcpy(&reply->options[options_ofst], &server->conf.lease_time, 4);
-                    options_ofst += 4;
-                    break;
-                case OC_RENEWAL_TIME:
-                    reply->options[options_ofst++] = parameters_tlv->value[i];
-                    reply->options[options_ofst++] = 4;
-                    memcpy(&reply->options[options_ofst], &server->conf.renew_time, 4);
-                    options_ofst += 4;
-                    break;
+                // case OC_LEASE_TIME:
+                //     reply->options[options_ofst++] = parameters_tlv->value[i];
+                //     reply->options[options_ofst++] = 4;
+                //     memcpy(&reply->options[options_ofst], &server->conf.lease_time, 4);
+                //     options_ofst += 4;
+                //     break;
+                // case OC_RENEWAL_TIME:
+                //     reply->options[options_ofst++] = parameters_tlv->value[i];
+                //     reply->options[options_ofst++] = 4;
+                //     memcpy(&reply->options[options_ofst], &server->conf.renew_time, 4);
+                //     options_ofst += 4;
+                //     break;
                 case OC_REBINDING_TIME:
                     reply->options[options_ofst++] = parameters_tlv->value[i];
                     reply->options[options_ofst++] = 4;
@@ -221,10 +273,12 @@ void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet
         }
     }
     else{
+        printf("not selected\n");
         // is not selected
         if (packet->hlen == MAC_ADDR_LENGTH)
         {
             cancel_offer(server->pool, packet->chaddr);
+            *send_packet = 0;
         }
         else{
             perror("unsupported chaddr type\n");
@@ -243,9 +297,9 @@ void process_dhcp_release(struct dhcp_server *server, uint32_t client_ip, struct
     struct option_tlv *server_id_tlv = get_option_tlv(options, OC_SERVER_ID);
     uint32_t server_id_no;
     memcpy(&server_id_no, server_id_tlv->value, server_id_tlv->len);
-    uint32_t server_ip_no;
-    inet_pton(AF_INET, server->conf.ip, &server_ip_no);
-    if (server_id_no != server_ip_no)
+    struct in_addr ip_addr;
+    inet_pton(AF_INET, server->conf.ip_addr, &ip_addr);
+    if (server_id_no != ip_addr.s_addr)
     {
         printf("OC_SERVER_ID does not match with the server ip\n");
         return;
@@ -318,6 +372,7 @@ int main(int argc, char *argv[]){
     broadcast_addr.sin_family = AF_INET;
     broadcast_addr.sin_port = htons(68);
     broadcast_addr.sin_addr.s_addr = inet_addr("255.255.255.255");
+
             
     while (1)
     {
@@ -343,6 +398,7 @@ int main(int argc, char *argv[]){
             memset(&reply_packet, 0, sizeof(struct dhcp_packet));
             size_t reply_len = -1;
 
+
             switch (message_type)
             {
             case MTC_INVALID:
@@ -360,22 +416,25 @@ int main(int argc, char *argv[]){
                 print_dhcp_header(&reply_packet);
                 break;
             case MTC_DHCPREQUEST:
-                process_dhcp_request(server, packet, &op_list, &reply_packet, &reply_len);
-                // TODO: Using broadcast or unicast should depend on the broadcast flag in the DUCP header and whether the client has obtained an IP address or not
-                if (sendto(server->sock, &(reply_packet), reply_len, 0, (struct sockaddr *)&broadcast_addr, sizeof(broadcast_addr)) < 0)
                 {
-                    perror("An error occurs when sending a DHCPACK/DHCPNAK packet\n");
-                    exit(-1);
+                    uint8_t send = 0;
+                    process_dhcp_request(server, packet, &op_list, &reply_packet, &reply_len, &send);
+                    // TODO: Using broadcast or unicast should depend on the broadcast flag in the DUCP header and whether the client has obtained an IP address or not
+                    if (send == 0) break;
+                    if (sendto(server->sock, &(reply_packet), reply_len, 0, (struct sockaddr *)&broadcast_addr, sizeof(broadcast_addr)) < 0)
+                    {
+                        perror("An error occurs when sending a DHCPACK/DHCPNAK packet\n");
+                        exit(-1);
+                    }
+                    break;
                 }
-                break;
             case MTC_DHCPDECLINE:
                 process_dhcp_decline();
                 break;
-            case MTC_DHCPRELEASE: {
+            case MTC_DHCPRELEASE:
                 uint32_t client_ip = ntohl(addr_c.sin_addr.s_addr);
                 process_dhcp_release(server, client_ip, packet, &op_list);
                 break;
-	}
             case MTC_DHCPINFORM:
                 process_dhcp_inform();
                 break;

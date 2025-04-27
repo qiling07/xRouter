@@ -5,8 +5,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
-#include <unistd.h>
-#include <stdint.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
 #include "addr_pool.h"
 
 #define DHCP_S_PORT 67
@@ -15,8 +15,8 @@
 #define CONF_FILE_PATH "dhcp.conf"
 
 struct dhcp_conf{
-    char *ip;
-    char *mac;
+    char *ip_addr; // network byte order
+    uint8_t hw_addr[6];
     char *isp_interface;
     char *lan_interface;
     char *gateway;
@@ -50,8 +50,6 @@ struct dhcp_server* init_dhcp_server(int socket){
 
 void release_dhcp_server(struct dhcp_server* server){
     // free configuration
-    free(server->conf.ip);
-    free(server->conf.mac);
     free(server->conf.isp_interface);
     free(server->conf.lan_interface);
     free(server->conf.gateway);
@@ -66,23 +64,55 @@ void release_dhcp_server(struct dhcp_server* server){
     free(server);
 }
 
+int set_hwaddr(const char *ifname, struct dhcp_conf *conf) {
+    // Open a socket for ioctl calls
+    int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    ifr.ifr_name[IFNAMSIZ - 1] = '\0';
+
+    // // Get IP address
+    // if (ioctl(sockfd, SIOCGIFADDR, &ifr) == -1) {
+    //     perror("ioctl SIOCGIFADDR");
+    //     close(sockfd);
+    //     return -1;
+    // }
+    // struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
+    // conf->ip_addr = sin->sin_addr;
+
+    // Get hardware (MAC) address
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) == -1) {
+        perror("ioctl SIOCGIFHWADDR");
+        close(sockfd);
+        return -1;
+    }
+    memcpy(conf->hw_addr, ifr.ifr_hwaddr.sa_data, 6);
+    close(sockfd);
+
+    return 0;
+}
+
 void parse_dhcp_conf(struct dhcp_conf *conf){
     // TODO: read parameters from the configuration file or pass parameters via command-line flags
-    conf->ip = strdup("10.0.2.15");
-    conf->mac = strdup("52:54:00:12:34:57");
-    conf->isp_interface = strdup("eth0");
-    conf->lan_interface = strdup("eth1");
+    conf->ip_addr = strdup("192.168.20.1");
+    conf->isp_interface = strdup("enp0s3");
+    conf->lan_interface = strdup("enp0s8");
+    set_hwaddr(conf->isp_interface, conf);
     conf->gateway = strdup("192.168.20.1");
     conf->netmask = strdup("255.255.255.0");
     conf->broadcast = strdup("192.168.20.255");
     conf->dns_ip = strdup("8.8.8.8");
     conf->domain_name = strdup("router.vm");
     conf->start_ip = strdup("192.168.20.101");
-    conf->end_ip = strdup("192.168.20.200");
+    conf->end_ip = strdup("192.168.10.200");
     conf->pool_size = 100;
-    conf->lease_time = 600;
-    conf->renew_time = 300;
-    conf->rebinding_time = 525;
+    conf->lease_time = 60; // 600
+    conf->renew_time = 30; // 300
+    conf->rebinding_time = 50; // 525
 }
 
 #endif
