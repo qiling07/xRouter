@@ -15,7 +15,7 @@ clean:
 	rm -f $(TARGET) *.o
 
 config:
-	iptables-legacy -I INPUT -i enp1s0f0 -p tcp --dport 49152:65535 -j DROP
+	iptables -I INPUT -i enp0s8 -p tcp --dport 49152:65535 -j DROP
 
 tests: test-ping test-dns 
 	@echo "Running tests..."

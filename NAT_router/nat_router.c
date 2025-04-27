@@ -104,20 +104,36 @@ void *admin_thread_func(void *arg) {
             }
         }
         else if (strncmp(admin_buf, "ADD_FILTER ", 11) == 0) {
-            char *domain = admin_buf + 11;
-            int r = filter_add(domain);
-            const char *resp = (r == 0)
-                ? "ADD_FILTER OK\n"
-                : "ADD_FILTER FAILED\n";
+            char domain[DOMAIN_MAX_LEN];
+            char ipstr[INET_ADDRSTRLEN];
+            int got = sscanf(admin_buf + 11, "%255s %15s", domain, ipstr);
+            char resp[100];
+            if (got == 2) {
+                int r = filter_add(domain, ipstr);
+                snprintf(resp, sizeof(resp),
+                        r == 0 ? "ADD_FILTER OK\n" : "ADD_FILTER FAILED\n");
+            } else {
+                snprintf(resp, sizeof(resp),
+                        "USAGE: ADD_FILTER <domain> <ip|*>\n");
+            }
             sendto(admin_fd, resp, strlen(resp), 0,
                 (struct sockaddr*)&client_addr, client_addr_len);
         }
         else if (strncmp(admin_buf, "DEL_FILTER ", 11) == 0) {
-            char *domain = admin_buf + 11;
-            int r = filter_del(domain);
-            const char *resp = (r == 0)
-                ? "DEL_FILTER OK\n"
-                : "DEL_FILTER FAILED\n";
+            char domain[DOMAIN_MAX_LEN];
+            char ipstr[INET_ADDRSTRLEN];
+            int got = sscanf(admin_buf + 11, "%255s %15s", domain, ipstr);
+            // printf("parsed domain = '%s', ipstr = '%s', got = %d\n", domain, ipstr, got);
+            char resp[100];
+            if (got == 2) {
+                int r = filter_del(domain, ipstr);
+                snprintf(resp, sizeof(resp),
+                        r == 0 ? "DEL_FILTER OK\n" : "DEL_FILTER FAILED\n");
+            } else {
+                // printf("got %d\n", got);
+                snprintf(resp, sizeof(resp),
+                        "USAGE: DEL_FILTER <domain> <ip|*>\n");
+            }
             sendto(admin_fd, resp, strlen(resp), 0,
                 (struct sockaddr*)&client_addr, client_addr_len);
         }
@@ -226,6 +242,17 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
     bool is_tcp_fin = false;
     bool is_tcp_ack = false;
 
+    size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
+    // printf(ip->ip_src.s_addr);
+    char src_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &ip->ip_src, src_str, sizeof(src_str));
+    // printf("src IP = %s\n", src_str);
+    if (filter_should_drop(ip->ip_p, l4, l4len,
+        ip->ip_src.s_addr)) {
+            // printf("Packet dropped by filter\n");
+    return;
+    }
+
     if (ip->ip_p == IPPROTO_TCP) {
         struct tcphdr *t = l4;
         id_or_port = ntohs(t->source);
@@ -245,9 +272,7 @@ void handle_internal_packet(unsigned char *buf, ssize_t n) {
         icmp->checksum = 0;
     }
 
-    size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
-    if (filter_should_drop(ip->ip_p, l4, l4len))
-        return;
+
     
     struct nat_entry *e = nat_lookup(ip->ip_src.s_addr, id_or_port, ip->ip_p, 0);
     
@@ -426,6 +451,13 @@ void handle_external_packet(unsigned char *buf, ssize_t n) {
         e->int_fin = 1;
         //printf("connection rst!\n");
     }
+
+    // size_t l4len = ntohs(ip->ip_len) - ip->ip_hl * 4;
+    // if (filter_should_drop(ip->ip_p, l4, l4len,
+    //     ip->ip_src.s_addr,
+    //     e->int_ip)) {
+    // return;
+    // }
 
 
     e->ts = time(NULL);

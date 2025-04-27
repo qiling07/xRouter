@@ -19,7 +19,7 @@
  #include <netinet/ip_icmp.h>
  #include <pthread.h>
  
- static filter_entry_t *head = NULL;
+ static filter_rule_t *head = NULL;
  static pthread_mutex_t  mtx  = PTHREAD_MUTEX_INITIALIZER;
  
  void filter_init(void) {
@@ -30,9 +30,9 @@
  
  void filter_cleanup(void) {
      pthread_mutex_lock(&mtx);
-     filter_entry_t *cur = head;
+     filter_rule_t *cur = head;
      while (cur) {
-         filter_entry_t *tmp = cur->next;
+         filter_rule_t *tmp = cur->next;
          free(cur);
          cur = tmp;
      }
@@ -40,56 +40,81 @@
      pthread_mutex_unlock(&mtx);
  }
  
- int filter_add(const char *domain) {
-     pthread_mutex_lock(&mtx);
-     for (filter_entry_t *e = head; e; e = e->next) {
-         if (strcmp(e->domain, domain) == 0) {
-             pthread_mutex_unlock(&mtx);
-             return 1;  // already exists
-         }
-     }
-     filter_entry_t *node = malloc(sizeof(*node));
-     if (!node) {
-         pthread_mutex_unlock(&mtx);
-         return -1;  // allocation failed
-     }
-     strncpy(node->domain, domain, DOMAIN_MAX_LEN - 1);
-     node->domain[DOMAIN_MAX_LEN - 1] = '\0';
-     node->next = head;
-     head = node;
-     pthread_mutex_unlock(&mtx);
-     return 0;
- }
+ int filter_add(const char *domain, const char *ip_str) {
+    struct in_addr a;
+    uint32_t ip;
+    if (strcmp(ip_str, "*") == 0) {
+        ip = INADDR_ANY;
+    } else if (inet_pton(AF_INET, ip_str, &a) == 1) {
+        ip = a.s_addr;
+    } else {
+        return -1;  // IP address invalid
+    }
+
+    pthread_mutex_lock(&mtx);
+    // check if domain already exists
+    for (filter_rule_t *r = head; r; r = r->next) {
+        if (r->ip == ip && strcmp(r->domain, domain) == 0) {
+            pthread_mutex_unlock(&mtx);
+            return 1;
+        }
+    }
+    filter_rule_t *r = malloc(sizeof(*r));
+    if (!r) {
+        pthread_mutex_unlock(&mtx);
+        return -1;
+    }
+    strncpy(r->domain, domain, DOMAIN_MAX_LEN-1);
+    r->domain[DOMAIN_MAX_LEN-1] = '\0';
+    r->ip = ip;
+    r->next = head;
+    head = r;
+    pthread_mutex_unlock(&mtx);
+    return 0;
+}
  
- int filter_del(const char *domain) {
-     pthread_mutex_lock(&mtx);
-     filter_entry_t **pp = &head;
-     while (*pp) {
-         filter_entry_t *e = *pp;
-         if (strcmp(e->domain, domain) == 0) {
-             *pp = e->next;
-             free(e);
-             pthread_mutex_unlock(&mtx);
-             return 0;  // removed
-         }
-         pp = &e->next;
-     }
-     pthread_mutex_unlock(&mtx);
-     return 1;  // not found
- }
+int filter_del(const char *domain, const char *ip_str) {
+    struct in_addr a;
+    uint32_t ip;
+    if (strcmp(ip_str, "*") == 0) {
+        ip = INADDR_ANY;
+    } else if (inet_pton(AF_INET, ip_str, &a) == 1) {
+        ip = a.s_addr;
+    } else {
+        return -1;
+    }
+
+    pthread_mutex_lock(&mtx);
+    filter_rule_t **pp = &head;
+    while (*pp) {
+        if ((*pp)->ip == ip && strcmp((*pp)->domain, domain) == 0) {
+            filter_rule_t *tmp = *pp;
+            *pp = tmp->next;
+            free(tmp);
+            pthread_mutex_unlock(&mtx);
+            return 0;
+        }
+        pp = &(*pp)->next;
+    }
+    pthread_mutex_unlock(&mtx);
+    return 1;
+}
  
- char *filter_list_str(char *buf, size_t buflen) {
-     pthread_mutex_lock(&mtx);
-     size_t off = 0;
-     for (filter_entry_t *e = head; e; e = e->next) {
-         int n = snprintf(buf + off, buflen - off, "%s\n", e->domain);
-         if (n < 0 || (size_t)n >= buflen - off) break;
-         off += n;
-     }
-     if (off < buflen) buf[off] = '\0';
-     pthread_mutex_unlock(&mtx);
-     return buf;
- }
+char *filter_list_str(char *buf, size_t buflen) {
+    pthread_mutex_lock(&mtx);
+    size_t off = 0;
+    for (filter_rule_t *r = head; r; r = r->next) {
+        char ipbuf[INET_ADDRSTRLEN];
+        if (r->ip == INADDR_ANY) strcpy(ipbuf, "*");
+        else inet_ntop(AF_INET, &r->ip, ipbuf, sizeof(ipbuf));
+        int n = snprintf(buf+off, buflen-off, "%s %s\n", r->domain, ipbuf);
+        if (n < 0 || (size_t)n >= buflen-off) break;
+        off += n;
+    }
+    if (off < buflen) buf[off] = '\0';
+    pthread_mutex_unlock(&mtx);
+    return buf;
+}
  
  /**
   * Inspect DNS query payload for any blacklisted domain.
@@ -118,7 +143,7 @@
          offset += 4;
          // check blacklist
          pthread_mutex_lock(&mtx);
-         for (filter_entry_t *e = head; e; e = e->next) {
+         for (filter_rule_t *e = head; e; e = e->next) {
              if (strstr(qname, e->domain)) {
                  pthread_mutex_unlock(&mtx);
                  return 1;
@@ -147,7 +172,7 @@
              memcpy(host, p, copy);
              host[copy] = '\0';
              pthread_mutex_lock(&mtx);
-             for (filter_entry_t *e = head; e; e = e->next) {
+             for (filter_rule_t *e = head; e; e = e->next) {
                  if (strstr(host, e->domain)) {
                      pthread_mutex_unlock(&mtx);
                      return 1;
@@ -173,32 +198,48 @@
   * Top-level filter function: given L4 proto and pointer/length,
   * decide whether to drop the packet.
   */
- int filter_should_drop(uint8_t proto, const void *l4, size_t l4len) {
-     if (proto == IPPROTO_UDP) {
-         const struct udphdr *u = l4;
-         uint16_t dport = ntohs(u->dest);
-         const unsigned char *payload = (const unsigned char*)l4 + sizeof(*u);
-         size_t payload_len = l4len - sizeof(*u);
-         if (dport == 53 && filter_check_dns(payload, payload_len)) {
-             return 1;
-         }
-     }
-     else if (proto == IPPROTO_TCP) {
-         const struct tcphdr *t = l4;
-         uint16_t dport = ntohs(t->dest);
-         size_t hdrlen = t->doff * 4;
-         const unsigned char *payload = (const unsigned char*)l4 + hdrlen;
-         size_t payload_len = l4len - hdrlen;
-         if (dport == 80 && filter_check_http(payload, payload_len)) {
-             return 1;
-         }
-         if (dport == 443 && filter_check_tls_sni(payload, payload_len)) {
-             return 1;
-         }
-     }
-     else if (proto == IPPROTO_ICMP) {
-         // Optionally implement domain->IP mapping + ICMP drop
-     }
-     return 0;  // pass
- }
+ int filter_should_drop(uint8_t proto,
+    const void *l4, size_t l4len,
+    uint32_t src_ip) {
+    pthread_mutex_lock(&mtx);
+    int has_rules = (head != NULL);
+    pthread_mutex_unlock(&mtx);
+    if (!has_rules) return 0;  // no rules to check
+    for (filter_rule_t *r = head; r; r = r->next) {
+    if (r->ip != INADDR_ANY && r->ip != src_ip)
+    continue;
+    // printf("filter_check: %s %s\n", r->domain, inet_ntoa(*(struct in_addr *)&src_ip));
+    if (proto == IPPROTO_UDP) {
+    const struct udphdr *u = l4;
+    if (ntohs(u->dest) == 53) {
+    const unsigned char *p = (unsigned char*)l4 + sizeof(*u);
+    size_t plen = l4len - sizeof(*u);
+    if (filter_check_dns(p, plen) &&
+    strstr((char*)p, r->domain)) {
+    return 1;
+    }
+    }
+    }
+    else if (proto == IPPROTO_TCP) {
+    const struct tcphdr *t = l4;
+    uint16_t dport = ntohs(t->dest);
+    size_t hdrlen = t->doff*4;
+    const unsigned char *p = (unsigned char*)l4 + hdrlen;
+    size_t plen = l4len - hdrlen;
+    if (dport == 80) {
+    if (filter_check_http(p, plen) &&
+    strstr((char*)p, r->domain)) {
+    return 1;
+    }
+    }
+    else if (dport == 443) {
+    if (filter_check_tls_sni(p, plen)) {
+    return 1;
+    }
+    }
+    }
+    }
+
+    return 0;
+}
  
