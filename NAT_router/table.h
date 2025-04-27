@@ -30,8 +30,8 @@
 #define AVAILABLE_PORTS (MAX_PORT - MIN_PORT + 1)
 
 #define TCP_CLOSED_TTL 10                // 10 seconds
-#define TCP_INACTIVE_TTL 600                 // 10 minutes
-#define NAT_INACTIVE_TTL 120                     // 2 minutes
+#define TCP_INACTIVE_TTL 30                 // 10 minutes
+#define NAT_INACTIVE_TTL 10                     // 2 minutes
 #define NAT_TABLE_SIZE 1024
 
 /* ---------------- NAT table ---------------- */
@@ -86,5 +86,6 @@ int nat_delete_port_forward(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_
 // printing
 void print_nat_table(int static_only);
 void get_nat_table_string(char *buf, size_t bufsize, int static_only);
+void print_nat_entry(struct nat_entry *e, int static_only);
 
 #endif

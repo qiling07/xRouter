@@ -295,6 +295,9 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     // time used for the binding is updated in nat_lookup_or_create_outbound
     struct nat_entry *e = nat_lookup_or_create_outbound(src_ip, src_port, dst_ip, dst_port, proto, ntohl(ext_if_info.ip_addr.s_addr), is_tcp_fin, is_tcp_ack, is_tcp_rst);
     assert(e != NULL);
+    
+    // printf("Found entry for outbound translation:\n");
+    // print_nat_entry(e, 0);
 
     // translation:
     // TCP/UDP: src_ip -> ext_ip, src_port -> ext_port
@@ -469,6 +472,9 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     // time used for the binding is updated in nat_lookup_or_create_outbound
     struct nat_entry *e = nat_lookup_inbound(src_ip, src_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
     if (!e) return;
+    
+    // printf("Found entry for inbound translation:\n");
+    // print_nat_entry(e, 0);
 
     // translation:
     // TCP/UDP: dst_ip -> int_ip, dst_port -> int_port
