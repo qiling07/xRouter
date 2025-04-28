@@ -264,7 +264,6 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
         dst_port = ntohs(t->dest);
 
         l4_hdr_len = t->doff * 4;
-        t->check = 0;
 
         if (t->fin) is_tcp_fin = true;
         if (t->ack) is_tcp_ack = true;
@@ -275,7 +274,6 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
         dst_port = ntohs(u->dest);
 
         l4_hdr_len = sizeof(struct udphdr); 
-        u->check = 0;
     } else if (proto == IPPROTO_ICMP) {
         struct icmphdr *icmp = l4;
         if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
@@ -283,7 +281,6 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
             dst_port = src_port;
 
             l4_hdr_len = sizeof(struct icmphdr);
-            icmp->checksum = 0;
         } else {
             assert(0 && "Unreachable");
         }
@@ -295,6 +292,11 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     // time used for the binding is updated in nat_lookup_or_create_outbound
     struct nat_entry *e = nat_lookup_or_create_outbound(src_ip, src_port, dst_ip, dst_port, proto, ntohl(ext_if_info.ip_addr.s_addr), is_tcp_fin, is_tcp_ack, is_tcp_rst);
     assert(e != NULL);
+
+    // make a copy of the original ip packet
+    struct ip *ip_copy = malloc(ntohs(ip->ip_len));
+    if (!ip_copy) return;
+    memcpy(ip_copy, ip, ntohs(ip->ip_len));
     
     // printf("Found entry for outbound translation:\n");
     // print_nat_entry(e, 0);
@@ -309,15 +311,18 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     if (proto == IPPROTO_TCP) {
         struct tcphdr *t = l4;
         t->source = htons(e->ext_port);
+        t->check = 0;
         t->check = l4_checksum(ip, l4, l4_total_len);
     } else if (proto == IPPROTO_UDP) {
         struct udphdr *u = l4;
         u->source = htons(e->ext_port);
+        u->check = 0;
         u->check = l4_checksum(ip, l4, l4_total_len);
     } else if (proto == IPPROTO_ICMP) {
         struct icmphdr *icmp = l4;
         if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
             icmp->un.echo.id = htons(e->ext_port);
+            icmp->checksum = 0;
             icmp->checksum = checksum(l4, l4_total_len);
         } else {
             assert(0 && "Unreachable");
@@ -340,8 +345,8 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     if (ret < 0) {
         if (errno == EMSGSIZE) {
             int mtu = ext_if_info.mtu;
-            if (ip->ip_off & htons(IP_DF)) {
-                send_icmp_frag_needed(outward_sock, ip, dst, mtu);
+            if (ntohs(ip->ip_off) & IP_DF) {
+                send_icmp_frag_needed(inward_sock, ip_copy, int_if_info.ip_addr, mtu);
             } else {
                 fragment_and_send(outward_sock, ip, dst, mtu);
             }
@@ -350,6 +355,7 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
             print_tcpdump_packet(ip, ext_if_info.name);
         }
     }
+    free(ip_copy);
 }
 struct packet_data {
     unsigned char *data;
@@ -373,27 +379,31 @@ void* thread_func_outbound(void *arg) {
         ssize_t n = recv(raw_int, buf, BUF_SZ, 0);
         if (n <= 0) continue;
 
-        unsigned char *pkt_copy = malloc(n);
-        if (!pkt_copy) continue;
-        memcpy(pkt_copy, buf, n);
+        if (false) {
+            handle_outbound_packet(buf, n);
+        } else {
+            unsigned char *pkt_copy = malloc(n);
+            if (!pkt_copy) continue;
+            memcpy(pkt_copy, buf, n);
 
-        pthread_t worker;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+            pthread_t worker;
+            pthread_attr_t attr;
+            pthread_attr_init(&attr);
+            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
-        struct packet_data *p = malloc(sizeof(struct packet_data));
-        if (!p) {
-            free(pkt_copy);
-            continue;
+            struct packet_data *p = malloc(sizeof(struct packet_data));
+            if (!p) {
+                free(pkt_copy);
+                continue;
+            }
+            p->data = pkt_copy;
+            p->len = n;
+            if (pthread_create(&worker, &attr, packet_worker_func_outbound, p) != 0) {
+                free(pkt_copy);
+                free(p);
+            }
+            pthread_attr_destroy(&attr);
         }
-        p->data = pkt_copy;
-        p->len = n;
-        if (pthread_create(&worker, &attr, packet_worker_func_outbound, p) != 0) {
-            free(pkt_copy);
-            free(p);
-        }
-        pthread_attr_destroy(&attr);
     }
     
     close(raw_int);
@@ -441,7 +451,6 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
         dst_port = ntohs(t->dest);
 
         l4_hdr_len = t->doff * 4;
-        t->check = 0;
 
         if (t->fin) is_tcp_fin = true;
         if (t->ack) is_tcp_ack = true;
@@ -452,7 +461,6 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
         dst_port = ntohs(u->dest);
 
         l4_hdr_len = sizeof(struct udphdr); 
-        u->check = 0;
     } else if (proto == IPPROTO_ICMP) {
         struct icmphdr *icmp = l4;
         if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
@@ -460,7 +468,6 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
             dst_port = src_port;
 
             l4_hdr_len = sizeof(struct icmphdr);
-            icmp->checksum = 0;
         } else {
             assert(0 && "Unreachable");
         }
@@ -472,6 +479,11 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     // time used for the binding is updated in nat_lookup_or_create_outbound
     struct nat_entry *e = nat_lookup_inbound(src_ip, src_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
     if (!e) return;
+
+    // make a copy of the original ip packet
+    struct ip *ip_copy = malloc(ntohs(ip->ip_len));
+    if (!ip_copy) return;
+    memcpy(ip_copy, ip, ntohs(ip->ip_len));
     
     // printf("Found entry for inbound translation:\n");
     // print_nat_entry(e, 0);
@@ -486,10 +498,12 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     if (proto == IPPROTO_TCP) {
         struct tcphdr *t = l4;
         t->dest = htons(e->int_port);
+        t->check = 0;
         t->check = l4_checksum(ip, l4, l4_total_len);
     } else if (proto == IPPROTO_UDP) {
         struct udphdr *u = l4;
         u->dest = htons(e->int_port);
+        u->check = 0;
         u->check = l4_checksum(ip, l4, l4_total_len);
     } else if (proto == IPPROTO_ICMP) {
         struct icmphdr *icmp = l4;
@@ -516,8 +530,8 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     if (ret < 0) {
         if (errno == EMSGSIZE) {
             int mtu = int_if_info.mtu;
-            if (ip->ip_off & htons(IP_DF)) {
-                send_icmp_frag_needed(inward_sock, ip, dst, mtu);
+            if (ntohs(ip->ip_off) & IP_DF) {
+                send_icmp_frag_needed(outward_sock, ip_copy, ext_if_info.ip_addr, mtu);
             } else {
                 fragment_and_send(inward_sock, ip, dst, mtu);
             }
@@ -526,7 +540,7 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
             print_tcpdump_packet(ip, int_if_info.name);
         }
     }
-
+    free(ip_copy);
 }
 
 void* packet_worker_func_inbound(void *arg) {
@@ -547,26 +561,30 @@ void* thread_func_inbound(void *arg) {
         ssize_t n = recv(raw_ext, buf, BUF_SZ, 0);
         if (n <= 0) continue;
 
-        unsigned char *pkt_copy = malloc(n);
-        if (!pkt_copy) continue;
-        memcpy(pkt_copy, buf, n);
+        if (false) {
+            handle_inbound_packet(buf, n);
+        } else {
+            unsigned char *pkt_copy = malloc(n);
+            if (!pkt_copy) continue;
+            memcpy(pkt_copy, buf, n);
 
-        pthread_t worker;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        struct packet_data *p = malloc(sizeof(struct packet_data));
-        if (!p) {
-            free(pkt_copy);
-            continue;
+            pthread_t worker;
+            pthread_attr_t attr;
+            pthread_attr_init(&attr);
+            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+            struct packet_data *p = malloc(sizeof(struct packet_data));
+            if (!p) {
+                free(pkt_copy);
+                continue;
+            }
+            p->data = pkt_copy;
+            p->len = n;
+            if (pthread_create(&worker, &attr, packet_worker_func_inbound, p) != 0) {
+                free(pkt_copy);
+                free(p);
+            }
+            pthread_attr_destroy(&attr);
         }
-        p->data = pkt_copy;
-        p->len = n;
-        if (pthread_create(&worker, &attr, packet_worker_func_inbound, p) != 0) {
-            free(pkt_copy);
-            free(p);
-        }
-        pthread_attr_destroy(&attr);
     }
 
     close(raw_ext);
@@ -607,6 +625,7 @@ int main(int argc, char *argv[]) {
         printf("Internal MAC: %s\n", int_if_info.hw_addr_str);
         printf("Internal netmask: %s\n", inet_ntoa(int_if_info.netmask));
         printf("Internal broadcast: %s\n", inet_ntoa(int_if_info.broadcast));
+        printf("Internal MTU: %d\n", int_if_info.mtu);
     }
 
     if (get_interface_info(argv[2], &ext_if_info) == -1) {
@@ -618,6 +637,7 @@ int main(int argc, char *argv[]) {
         printf("External MAC: %s\n", ext_if_info.hw_addr_str);
         printf("External netmask: %s\n", inet_ntoa(ext_if_info.netmask));
         printf("External broadcast: %s\n", inet_ntoa(ext_if_info.broadcast));
+        printf("External MTU: %d\n", ext_if_info.mtu);
     }
 
     outward_sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);

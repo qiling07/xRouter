@@ -34,7 +34,8 @@ uint32_t iface_ip(const char *ifname);
 
 int send_out_via_s1(int fd_s1, const uint8_t *ip_pkt, size_t ip_len, const char *dest_mac, const char *iface);
 void fragment_and_send(int sock, struct ip *ip, struct sockaddr_in dst, int mtu);
-void send_icmp_frag_needed(int sock, struct ip *orig_ip, struct sockaddr_in dst, int mtu);
+void send_icmp_frag_needed(int sock, struct ip *orig_ip, struct in_addr my_ip, int mtu);
+// void send_icmp_frag_needed(int sock, struct ip *orig_ip, struct sockaddr_in dst, int mtu);
 
 int get_iface_mac(const char *ifname, uint8_t mac[6]);
 

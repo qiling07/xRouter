@@ -1,4 +1,5 @@
 #include "utils.h"
+#include <netinet/ip.h> // For struct ip
 
 /* ---------------- helpers ---------------- */
 
@@ -434,7 +435,7 @@ void fragment_and_send(int sock, struct ip *ip, struct sockaddr_in dst, int mtu)
     }
 }
 
-void send_icmp_frag_needed(int sock, struct ip *orig_ip, struct sockaddr_in dst, int mtu) {
+void send_icmp_frag_needed(int sock, struct ip *orig_ip, struct in_addr my_ip, int mtu) {
     // Build ICMP Destination Unreachable (Type 3, Code 4)
     uint8_t buf[1280];
     struct ip *ip_hdr = (struct ip*)buf;
@@ -448,10 +449,11 @@ void send_icmp_frag_needed(int sock, struct ip *orig_ip, struct sockaddr_in dst,
     ip_hdr->ip_off = 0;
     ip_hdr->ip_ttl = 64;
     ip_hdr->ip_p = IPPROTO_ICMP;
-    ip_hdr->ip_src = orig_ip->ip_dst;
+    ip_hdr->ip_src = my_ip;
     ip_hdr->ip_dst = orig_ip->ip_src;
     ip_hdr->ip_sum = 0;
     ip_hdr->ip_sum = checksum(ip_hdr, ip_hdr->ip_hl * 4);
+    
     // prepare ICMP header
     icmp->type = ICMP_DEST_UNREACH;
     icmp->code = ICMP_FRAG_NEEDED;
@@ -459,5 +461,10 @@ void send_icmp_frag_needed(int sock, struct ip *orig_ip, struct sockaddr_in dst,
     memcpy(buf + sizeof(*ip_hdr) + sizeof(*icmp), orig_ip, (orig_ip->ip_hl * 4) + 8);
     icmp->checksum = 0;
     icmp->checksum = checksum(icmp, sizeof(*icmp) + (orig_ip->ip_hl * 4) + 8);
+
+    struct sockaddr_in dst = {
+        .sin_family = AF_INET,
+        .sin_addr  = orig_ip->ip_src,
+    };
     sendto(sock, buf, ntohs(ip_hdr->ip_len), 0, (struct sockaddr*)&dst, sizeof(dst));
 }
