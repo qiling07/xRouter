@@ -66,13 +66,22 @@ extern struct nat_entry *nat_external[NAT_TABLE_SIZE];
 // struct nat_entry *nat_create(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint8_t proto);
 // void nat_lookup_and_remove(uint32_t ip, uint16_t port, uint8_t proto, int reverse);
 
-struct nat_entry *nat_lookup_outbound(uint32_t src_ip, uint16_t src_port, 
+struct nat_binding {
+    bool is_valid;
+    uint32_t int_ip;
+    uint16_t int_port;
+    uint32_t ext_ip;
+    uint16_t ext_port;
+    uint8_t proto;
+};
+
+struct nat_binding nat_lookup_outbound(uint32_t src_ip, uint16_t src_port, 
                                     uint32_t dst_ip, uint16_t dst_port, uint8_t proto,
                                     bool is_tcp_fin, bool is_tcp_ack, bool is_tcp_rst);
-struct nat_entry *nat_lookup_inbound(uint32_t src_ip, uint16_t src_port, 
+struct nat_binding nat_lookup_inbound(uint32_t src_ip, uint16_t src_port, 
                                     uint32_t dst_ip, uint16_t dst_port, uint8_t proto,
                                     bool is_tcp_fin, bool is_tcp_ack, bool is_tcp_rst);
-struct nat_entry *nat_lookup_or_create_outbound(uint32_t src_ip, uint16_t src_port, 
+struct nat_binding nat_lookup_or_create_outbound(uint32_t src_ip, uint16_t src_port, 
                                         uint32_t dst_ip, uint16_t dst_port, uint8_t proto, uint32_t ext_if_ip,
                                         bool is_tcp_fin, bool is_tcp_ack, bool is_tcp_rst);
 
@@ -80,7 +89,7 @@ void nat_gc();
 void nat_reset();
 
 // port forwarding
-struct nat_entry *nat_add_port_forward(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint16_t ext_port, uint8_t proto);
+struct nat_binding nat_add_port_forward(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint16_t ext_port, uint8_t proto);
 int nat_delete_port_forward(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_ip, uint16_t ext_port, uint8_t proto);
 
 // printing

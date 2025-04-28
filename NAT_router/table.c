@@ -56,9 +56,25 @@ struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reve
     return NULL;
 }
 
-struct nat_entry *nat_lookup_outbound(uint32_t src_ip, uint16_t src_port, 
+struct nat_binding entry_to_binding(struct nat_entry *e) {
+    struct nat_binding binding;
+    if (e) {
+        binding.is_valid = true;
+        binding.int_ip = e->int_ip;
+        binding.int_port = e->int_port;
+        binding.ext_ip = e->ext_ip;
+        binding.ext_port = e->ext_port;
+        binding.proto = e->proto;
+    } else {
+        binding.is_valid = false;
+    }
+    return binding;
+}
+
+struct nat_binding nat_lookup_outbound(uint32_t src_ip, uint16_t src_port, 
     uint32_t dst_ip, uint16_t dst_port, uint8_t proto, bool is_tcp_fin, bool is_tcp_ack, bool is_tcp_rst) 
 {
+    struct nat_binding binding = entry_to_binding(NULL);
     unsigned idx = hash_internal(src_ip, src_port, proto);
 
     pthread_rwlock_rdlock(&nat_internal_rwlock);
@@ -80,17 +96,20 @@ struct nat_entry *nat_lookup_outbound(uint32_t src_ip, uint16_t src_port,
                 if (is_tcp_rst) e->tcp_status |= 0b111;
             }
 
+            binding = entry_to_binding(e);
+
             pthread_rwlock_unlock(&nat_internal_rwlock);
-            return e;
+            return binding;
         }
     }
     pthread_rwlock_unlock(&nat_internal_rwlock);
-    return NULL;
+    return binding;
 }
 
-struct nat_entry *nat_lookup_inbound(uint32_t src_ip, uint16_t src_port, 
+struct nat_binding nat_lookup_inbound(uint32_t src_ip, uint16_t src_port, 
     uint32_t dst_ip, uint16_t dst_port, uint8_t proto, bool is_tcp_fin, bool is_tcp_ack, bool is_tcp_rst) 
 {
+    struct nat_binding binding = entry_to_binding(NULL);
     unsigned idx = hash_external(dst_port, proto);
 
     pthread_rwlock_rdlock(&nat_external_rwlock);
@@ -105,8 +124,11 @@ struct nat_entry *nat_lookup_inbound(uint32_t src_ip, uint16_t src_port,
             if (src_ip == e->dst_ip
                 || e->is_static) {
                 e->ts = time(NULL);
+                // 
+                binding = entry_to_binding(e);
+
                 pthread_rwlock_unlock(&nat_external_rwlock);
-                return e;
+                return binding;
             }
         }
         else {
@@ -121,18 +143,21 @@ struct nat_entry *nat_lookup_inbound(uint32_t src_ip, uint16_t src_port,
                     if (is_tcp_rst) e->tcp_status |= 0b111;
                 }
 
+                binding = entry_to_binding(e);
+
                 pthread_rwlock_unlock(&nat_external_rwlock);
-                return e;
+                return binding;
             }
         }
     }
     pthread_rwlock_unlock(&nat_external_rwlock);
-    return NULL;
+    return binding;
 }
 
-struct nat_entry *nat_create_binding(uint32_t src_ip, uint16_t src_port, 
+struct nat_binding nat_create_binding(uint32_t src_ip, uint16_t src_port, 
     uint32_t dst_ip, uint16_t dst_port, uint8_t proto, uint32_t ext_if_ip) 
 {
+    struct nat_binding binding = entry_to_binding(NULL);
     assert(entry_count < NAT_TABLE_SIZE && "TODO: NAT table is full");
     
     struct nat_entry * e = (struct nat_entry *)calloc(1, sizeof(*e));
@@ -168,18 +193,20 @@ struct nat_entry *nat_create_binding(uint32_t src_ip, uint16_t src_port,
     e->ext_next = nat_external[e_idx];
     nat_external[e_idx] = e;
 
+    binding = entry_to_binding(e);
+
     entry_count++;
     pthread_rwlock_unlock(&nat_external_rwlock);
     pthread_rwlock_unlock(&nat_internal_rwlock);
 
-    return e;
+    return binding;
 }
 
-struct nat_entry *nat_lookup_or_create_outbound(uint32_t src_ip, uint16_t src_port, 
+struct nat_binding nat_lookup_or_create_outbound(uint32_t src_ip, uint16_t src_port, 
     uint32_t dst_ip, uint16_t dst_port, uint8_t proto, uint32_t ext_if_ip, bool is_tcp_fin, bool is_tcp_ack, bool is_tcp_rst) 
 {
-    struct nat_entry *e = nat_lookup_outbound(src_ip, src_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
-    if (e) return e;
+    struct nat_binding e = nat_lookup_outbound(src_ip, src_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
+    if (e.is_valid) return e;
 
     // If not found, create a new entry
     e = nat_create_binding(src_ip, src_port, dst_ip, dst_port, proto, ext_if_ip);
@@ -376,15 +403,16 @@ void nat_gc() {
 
 // Create a static port forwarding entry that will not time out
 // all inputs should be in host byte order
-struct nat_entry *nat_add_port_forward(uint32_t int_ip, uint16_t int_port,
+struct nat_binding nat_add_port_forward(uint32_t int_ip, uint16_t int_port,
                                        uint32_t ext_if_ip, uint16_t ext_port,
                                        uint8_t proto) {
+    struct nat_binding binding = entry_to_binding(NULL);
     pthread_rwlock_wrlock(&nat_internal_rwlock);
     pthread_rwlock_wrlock(&nat_external_rwlock);
     if (is_ext_port_taken(ext_port, proto) || ext_port < MIN_PORT || ext_port > MAX_PORT) {
         pthread_rwlock_unlock(&nat_external_rwlock);
         pthread_rwlock_unlock(&nat_internal_rwlock);
-        return NULL;
+        return binding;
     }
     
     struct nat_entry *e = (struct nat_entry *)calloc(1, sizeof(*e));
@@ -416,10 +444,12 @@ struct nat_entry *nat_add_port_forward(uint32_t int_ip, uint16_t int_port,
     e->ext_next = nat_external[e_idx];
     nat_external[e_idx] = e;
 
+    binding = entry_to_binding(e);
+
     pthread_rwlock_unlock(&nat_external_rwlock);
     pthread_rwlock_unlock(&nat_internal_rwlock);
 
-    return e;
+    return binding;
 }
 
 // all inputs should be in host byte order
