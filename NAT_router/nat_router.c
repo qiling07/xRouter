@@ -511,6 +511,7 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
         struct icmphdr *icmp = l4;
         if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
             icmp->un.echo.id = htons(e.int_port);
+            icmp->checksum = 0;
             icmp->checksum = checksum(l4, l4_total_len);
         } else {
             assert(0 && "Unreachable");
