@@ -220,6 +220,37 @@ void *admin_thread_func(void *arg) {
     pthread_exit(NULL);
 }
 
+void extract_l4_fields(void *l4, uint8_t proto, uint16_t *src_port, uint16_t *dst_port, size_t *l4_hdr_len, bool *is_tcp_fin, bool *is_tcp_ack, bool *is_tcp_rst) {
+    if (proto == IPPROTO_TCP) {
+        struct tcphdr *t = l4;
+        *src_port = ntohs(t->source);
+        *dst_port = ntohs(t->dest);
+
+        *l4_hdr_len = t->doff * 4;
+
+        if (t->fin) *is_tcp_fin = true;
+        if (t->ack) *is_tcp_ack = true;
+        if (t->rst) *is_tcp_rst = true;
+    } else if (proto == IPPROTO_UDP) {
+        struct udphdr *u = l4;
+        *src_port = ntohs(u->source);
+        *dst_port = ntohs(u->dest);
+
+        *l4_hdr_len = sizeof(struct udphdr); 
+    } else if (proto == IPPROTO_ICMP) {
+        struct icmphdr *icmp = l4;
+        if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
+            *src_port = ntohs(icmp->un.echo.id);
+            *dst_port = *src_port;
+
+            *l4_hdr_len = sizeof(struct icmphdr);
+        } else {
+            assert(0 && "Unreachable");
+        }
+    } else {
+        assert(0 && "Unreachable");
+    }
+}
 
 void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     // filter for outbound TCP/UPD/ICMP packets
@@ -259,37 +290,9 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     bool is_tcp_fin = false;
     bool is_tcp_ack = false;
     bool is_tcp_rst = false;
-
-    if (proto == IPPROTO_TCP) {
-        struct tcphdr *t = l4;
-        src_port = ntohs(t->source);
-        dst_port = ntohs(t->dest);
-
-        l4_hdr_len = t->doff * 4;
-
-        if (t->fin) is_tcp_fin = true;
-        if (t->ack) is_tcp_ack = true;
-        if (t->rst) is_tcp_rst = true;
-    } else if (proto == IPPROTO_UDP) {
-        struct udphdr *u = l4;
-        src_port = ntohs(u->source);
-        dst_port = ntohs(u->dest);
-
-        l4_hdr_len = sizeof(struct udphdr); 
-    } else if (proto == IPPROTO_ICMP) {
-        struct icmphdr *icmp = l4;
-        if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
-            src_port = ntohs(icmp->un.echo.id);
-            dst_port = src_port;
-
-            l4_hdr_len = sizeof(struct icmphdr);
-        } else {
-            assert(0 && "Unreachable");
-        }
-    } else {
-        assert(0 && "Unreachable");
-    }
+    extract_l4_fields(l4, proto, &src_port, &dst_port, &l4_hdr_len, &is_tcp_fin, &is_tcp_ack, &is_tcp_rst);
     
+
     // detect start of session -- if so, create a new binding; otherwise, use the existing binding
     // time used for the binding is updated in nat_lookup_or_create_outbound
     struct nat_binding e = nat_lookup_or_create_outbound(src_ip, src_port, dst_ip, dst_port, proto, ntohl(ext_if_info.ip_addr.s_addr), is_tcp_fin, is_tcp_ack, is_tcp_rst);
@@ -302,6 +305,7 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     
     // printf("Found entry for outbound translation:\n");
     // print_nat_entry(e, 0);
+
 
     // translation:
     // TCP/UDP: src_ip -> ext_ip, src_port -> ext_port
@@ -333,6 +337,8 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
         assert(0 && "Unreachable");
     }
 
+    
+    // retransmission; fragments or report frag needed if necessary
     struct sockaddr_in dst = {
         .sin_family = AF_INET,
         .sin_addr  = ip->ip_dst,
@@ -434,6 +440,7 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
     size_t l4_total_len = ntohs(ip->ip_len) - ip->ip_hl * 4;
 
+
     // extract session identifer (src_ip, src_port, dst_ip, dst_port, proto) in host byte order
     // also zero out the l4 header checksum
     uint32_t src_ip = ntohl(ip->ip_src.s_addr);
@@ -446,37 +453,9 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     bool is_tcp_fin = false;
     bool is_tcp_ack = false;
     bool is_tcp_rst = false;
-
-    if (proto == IPPROTO_TCP) {
-        struct tcphdr *t = l4;
-        src_port = ntohs(t->source);
-        dst_port = ntohs(t->dest);
-
-        l4_hdr_len = t->doff * 4;
-
-        if (t->fin) is_tcp_fin = true;
-        if (t->ack) is_tcp_ack = true;
-        if (t->rst) is_tcp_rst = true;
-    } else if (proto == IPPROTO_UDP) {
-        struct udphdr *u = l4;
-        src_port = ntohs(u->source);
-        dst_port = ntohs(u->dest);
-
-        l4_hdr_len = sizeof(struct udphdr); 
-    } else if (proto == IPPROTO_ICMP) {
-        struct icmphdr *icmp = l4;
-        if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
-            src_port = ntohs(icmp->un.echo.id);
-            dst_port = src_port;
-
-            l4_hdr_len = sizeof(struct icmphdr);
-        } else {
-            assert(0 && "Unreachable");
-        }
-    } else {
-        assert(0 && "Unreachable");
-    }
+    extract_l4_fields(l4, proto, &src_port, &dst_port, &l4_hdr_len, &is_tcp_fin, &is_tcp_ack, &is_tcp_rst);
     
+
     // find an existing binding
     // time used for the binding is updated in nat_lookup_or_create_outbound
     struct nat_binding e = nat_lookup_inbound(src_ip, src_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
@@ -489,6 +468,7 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     
     // printf("Found entry for inbound translation:\n");
     // print_nat_entry(e, 0);
+
 
     // translation:
     // TCP/UDP: dst_ip -> int_ip, dst_port -> int_port
@@ -520,6 +500,8 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
         assert(0 && "Unreachable");
     }
 
+
+    // retransmission; fragments or report frag needed if necessary
     struct sockaddr_in dst = {
         .sin_family = AF_INET,
         .sin_addr  = ip->ip_dst,
