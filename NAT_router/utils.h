@@ -60,6 +60,7 @@ int get_interface_info(const char *ifname, interface_info *info);
 
 
 int is_host_address(uint32_t ip, interface_info *info);
+int is_outbound_traffic(uint32_t dst_ip, interface_info *info);
 int is_public_address(uint32_t ip);
 
 #endif

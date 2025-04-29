@@ -349,6 +349,19 @@ int is_host_address(uint32_t ip, interface_info *info) {
     return 1;
 }
 
+int is_outbound_traffic(uint32_t dst_ip, interface_info *info) {
+    uint32_t gateway_ip = ntohl(info->ip_addr.s_addr);
+    uint32_t mask = ntohl(info->netmask.s_addr);
+
+    if ((dst_ip & mask) != (gateway_ip & mask)) { // non-local traffic
+        return 1;
+    } else if (dst_ip == gateway_ip) { // traffic to the gateway ; 
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
 #include "utils.h"
 
 int is_public_address(uint32_t ip) {

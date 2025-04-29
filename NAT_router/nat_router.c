@@ -260,7 +260,8 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     struct ip *ip = (struct ip *)(buf + sizeof(*eth));
     if (checksum(ip, ip->ip_hl * 4) != 0) return;
     if (is_host_address(ntohl(ip->ip_src.s_addr), &int_if_info) == 0) return;
-    if (is_public_address(ntohl(ip->ip_dst.s_addr)) == 0) return;
+    // if (is_public_address(ntohl(ip->ip_dst.s_addr)) == 0) return; // TODO: check is_host instead
+    if (is_outbound_traffic(ntohl(ip->ip_dst.s_addr), &int_if_info) == 0) return;
     
     if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {} 
     else if (ip->ip_p == IPPROTO_ICMP) {
@@ -291,21 +292,35 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     bool is_tcp_ack = false;
     bool is_tcp_rst = false;
     extract_l4_fields(l4, proto, &src_port, &dst_port, &l4_hdr_len, &is_tcp_fin, &is_tcp_ack, &is_tcp_rst);
-    
+
+    // Hairpin NAT: internal host -> external IP port‐forward hairpin
+    struct nat_binding hp, e;
+    hp.is_valid = false;
+    e.is_valid = false;
+    if (ip->ip_dst.s_addr == ext_if_info.ip_addr.s_addr) {
+        if (proto == IPPROTO_ICMP) return; // ignore ICMP to gateway
+        else {
+            e = nat_lookup_outbound(src_ip, src_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
+            hp = nat_lookup_inbound(e.ext_ip, e.ext_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
+            if (!hp.is_valid) return; // ignore UDP/TCP to gateway without port-forward
+        }
+    }
 
     // detect start of session -- if so, create a new binding; otherwise, use the existing binding
     // time used for the binding is updated in nat_lookup_or_create_outbound
-    struct nat_binding e = nat_lookup_or_create_outbound(src_ip, src_port, dst_ip, dst_port, proto, ntohl(ext_if_info.ip_addr.s_addr), is_tcp_fin, is_tcp_ack, is_tcp_rst);
+    if (!e.is_valid) e = nat_lookup_or_create_outbound(src_ip, src_port, dst_ip, dst_port, 
+        proto, ntohl(ext_if_info.ip_addr.s_addr), is_tcp_fin, is_tcp_ack, is_tcp_rst);
     assert(e.is_valid);
+    // printf("Found entry for outbound translation:\n");
+    // print_nat_entry(e, 0);
+
 
     // make a copy of the original ip packet
     struct ip *ip_copy = malloc(ntohs(ip->ip_len));
     if (!ip_copy) return;
     memcpy(ip_copy, ip, ntohs(ip->ip_len));
-    
-    // printf("Found entry for outbound translation:\n");
-    // print_nat_entry(e, 0);
 
+    
 
     // translation:
     // TCP/UDP: src_ip -> ext_ip, src_port -> ext_port
@@ -337,32 +352,68 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
         assert(0 && "Unreachable");
     }
 
-    
-    // retransmission; fragments or report frag needed if necessary
-    struct sockaddr_in dst = {
-        .sin_family = AF_INET,
-        .sin_addr  = ip->ip_dst,
-    };
-    ssize_t ret = sendto(outward_sock,
-                         (void*)ip,
-                         ntohs(ip->ip_len),
-                         0,
-                         (struct sockaddr*)&dst,
-                         sizeof(dst));
-    
-    if (ret < 0) {
-        if (errno == EMSGSIZE) {
-            int mtu = ext_if_info.mtu;
-            if (ntohs(ip->ip_off) & IP_DF) {
-                send_icmp_frag_needed(inward_sock, ip_copy, int_if_info.ip_addr, mtu);
-            } else {
-                fragment_and_send(outward_sock, ip, dst, mtu);
-            }
+    // Hairpin NAT: internal host -> external IP port‐forward hairpin
+    if (hp.is_valid) {
+        ip->ip_dst.s_addr = htonl(hp.int_ip);
+        ip->ip_sum = 0;
+        ip->ip_sum = checksum(ip, ip->ip_hl * 4);
+        if (proto == IPPROTO_TCP) {
+            struct tcphdr *t2 = l4;
+            t2->dest = htons(hp.int_port);
+            t2->check = 0;
+            t2->check = l4_checksum(ip, l4, l4_total_len);
+        } else if (proto == IPPROTO_UDP) {
+            struct udphdr *u2 = l4;
+            u2->dest = htons(hp.int_port);
+            u2->check = 0;
+            u2->check = l4_checksum(ip, l4, l4_total_len);
         } else {
-            perror("raw sendto");
-            print_tcpdump_packet(ip, ext_if_info.name);
+            assert(0 && "Unreachable");
+        }
+
+        struct sockaddr_in dst = {
+            .sin_family = AF_INET,
+            .sin_addr  = ip->ip_dst,
+        };
+        // send back on internal interface
+        ssize_t ret = sendto(inward_sock, 
+                            (void*)ip,
+                            ntohs(ip->ip_len),
+                            0,
+                            (struct sockaddr*)&dst,
+                            sizeof(dst));
+        if (ret < 0) {
+            perror("hairpinning");
+            // print_tcpdump_packet(ip, ext_if_info.name);
+        }
+    } else {
+        // retransmission; fragments or report frag needed if necessary
+        struct sockaddr_in dst = {
+            .sin_family = AF_INET,
+            .sin_addr  = ip->ip_dst,
+        };
+        ssize_t ret = sendto(outward_sock,
+                            (void*)ip,
+                            ntohs(ip->ip_len),
+                            0,
+                            (struct sockaddr*)&dst,
+                            sizeof(dst));
+        
+        if (ret < 0) {
+            if (errno == EMSGSIZE) {
+                int mtu = ext_if_info.mtu;
+                if (ntohs(ip->ip_off) & IP_DF) {
+                    send_icmp_frag_needed(inward_sock, ip_copy, int_if_info.ip_addr, mtu);
+                } else {
+                    fragment_and_send(outward_sock, ip, dst, mtu);
+                }
+            } else {
+                perror("raw sendto");
+                print_tcpdump_packet(ip, ext_if_info.name);
+            }
         }
     }
+    
     free(ip_copy);
 }
 struct packet_data {
@@ -460,14 +511,15 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     // time used for the binding is updated in nat_lookup_or_create_outbound
     struct nat_binding e = nat_lookup_inbound(src_ip, src_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
     if (!e.is_valid) return;
+    // printf("Found entry for inbound translation:\n");
+    // print_nat_entry(e, 0);
+
 
     // make a copy of the original ip packet
     struct ip *ip_copy = malloc(ntohs(ip->ip_len));
     if (!ip_copy) return;
     memcpy(ip_copy, ip, ntohs(ip->ip_len));
     
-    // printf("Found entry for inbound translation:\n");
-    // print_nat_entry(e, 0);
 
 
     // translation:
