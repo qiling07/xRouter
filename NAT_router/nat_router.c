@@ -220,11 +220,13 @@ void *admin_thread_func(void *arg) {
     pthread_exit(NULL);
 }
 
-void extract_l4_fields(void *l4, uint8_t proto, uint16_t *src_port, uint16_t *dst_port, size_t *l4_hdr_len, bool *is_tcp_fin, bool *is_tcp_ack, bool *is_tcp_rst) {
+void extract_l4_fields(void *l4, uint8_t proto, uint16_t *src_port, uint16_t *dst_port, size_t *l4_hdr_len, bool *is_tcp_fin, bool *is_tcp_ack, bool *is_tcp_rst, bool include_extra_details) {
     if (proto == IPPROTO_TCP) {
         struct tcphdr *t = l4;
         *src_port = ntohs(t->source);
         *dst_port = ntohs(t->dest);
+
+        if (!include_extra_details) return;
 
         *l4_hdr_len = t->doff * 4;
 
@@ -236,12 +238,16 @@ void extract_l4_fields(void *l4, uint8_t proto, uint16_t *src_port, uint16_t *ds
         *src_port = ntohs(u->source);
         *dst_port = ntohs(u->dest);
 
+        if (!include_extra_details) return;
+
         *l4_hdr_len = sizeof(struct udphdr); 
     } else if (proto == IPPROTO_ICMP) {
         struct icmphdr *icmp = l4;
         if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
             *src_port = ntohs(icmp->un.echo.id);
             *dst_port = *src_port;
+
+            if (!include_extra_details) return;
 
             *l4_hdr_len = sizeof(struct icmphdr);
         } else {
@@ -260,11 +266,11 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     struct ip *ip = (struct ip *)(buf + sizeof(*eth));
     if (checksum(ip, ip->ip_hl * 4) != 0) return;
     if (is_host_address(ntohl(ip->ip_src.s_addr), &int_if_info) == 0) return;
-    // if (is_public_address(ntohl(ip->ip_dst.s_addr)) == 0) return; // TODO: check is_host instead
+    // if (is_public_address(ntohl(ip->ip_dst.s_addr)) == 0) return;
     if (is_outbound_traffic(ntohl(ip->ip_dst.s_addr), &int_if_info) == 0) return;
     
     if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {} 
-    else if (ip->ip_p == IPPROTO_ICMP) {
+    else if (ip->ip_p == IPPROTO_ICMP) {                             // TODO: exclude hairpinning
         struct icmphdr *icmp = (struct icmphdr *)(buf + sizeof(*eth) + ip->ip_hl * 4);
         if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {}
         else return;
@@ -291,7 +297,7 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     bool is_tcp_fin = false;
     bool is_tcp_ack = false;
     bool is_tcp_rst = false;
-    extract_l4_fields(l4, proto, &src_port, &dst_port, &l4_hdr_len, &is_tcp_fin, &is_tcp_ack, &is_tcp_rst);
+    extract_l4_fields(l4, proto, &src_port, &dst_port, &l4_hdr_len, &is_tcp_fin, &is_tcp_ack, &is_tcp_rst, true);
 
     // Hairpin NAT: internal host -> external IP port‐forward hairpin
     struct nat_binding hp, e;
@@ -399,7 +405,7 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
                             (struct sockaddr*)&dst,
                             sizeof(dst));
         
-        if (ret < 0) {
+        if (ret < 0 && ip->ip_p != IPPROTO_ICMP) {      // don't send error message for ICMP
             if (errno == EMSGSIZE) {
                 int mtu = ext_if_info.mtu;
                 if (ntohs(ip->ip_off) & IP_DF) {
@@ -475,6 +481,7 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     if (ntohs(eth->ether_type) != ETHERTYPE_IP)
         return;
     struct ip *ip = (struct ip *)(buf + sizeof(*eth));
+    struct ip *inner_ip = ip;                             // for ICMP error message
     if (checksum(ip, ip->ip_hl * 4) != 0) return;
     if (is_public_address(ntohl(ip->ip_src.s_addr)) == 0) return;
     if (ip->ip_dst.s_addr != ext_if_info.ip_addr.s_addr) return;
@@ -482,34 +489,52 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {} 
     else if (ip->ip_p == IPPROTO_ICMP) {
         struct icmphdr *icmp = (struct icmphdr *)(buf + sizeof(*eth) + ip->ip_hl * 4);
-        if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {}
-        else return;
+        if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
+            // existing echo handling
+        } else {
+            // ICMP error message handling: translate embedded original packet
+            char *inner_buf = (char *)icmp + sizeof(*icmp);
+            inner_ip = (struct ip *)inner_buf;
+            if (inner_ip->ip_p == IPPROTO_ICMP) return;
+        }
     } else {
         return;
     }
     
-    void *l4 = (unsigned char *)ip + ip->ip_hl * 4;
-    size_t l4_total_len = ntohs(ip->ip_len) - ip->ip_hl * 4;
+    void *l4 = (unsigned char *)inner_ip + inner_ip->ip_hl * 4;
+    size_t l4_total_len = ntohs(inner_ip->ip_len) - inner_ip->ip_hl * 4;
 
 
     // extract session identifer (src_ip, src_port, dst_ip, dst_port, proto) in host byte order
-    // also zero out the l4 header checksum
-    uint32_t src_ip = ntohl(ip->ip_src.s_addr);
-    uint32_t dst_ip = ntohl(ip->ip_dst.s_addr);
+    uint32_t src_ip = ntohl(inner_ip->ip_src.s_addr);
+    uint32_t dst_ip = ntohl(inner_ip->ip_dst.s_addr);
     uint16_t src_port = 0;
     uint16_t dst_port = 0;
-    uint8_t proto = ip->ip_p;
+    uint8_t proto = inner_ip->ip_p;
 
+    // extra details about the l4 header
     size_t l4_hdr_len = 0;
     bool is_tcp_fin = false;
     bool is_tcp_ack = false;
     bool is_tcp_rst = false;
-    extract_l4_fields(l4, proto, &src_port, &dst_port, &l4_hdr_len, &is_tcp_fin, &is_tcp_ack, &is_tcp_rst);
+    
+    // printf("is icmp error: %d\n", inner_ip != ip);
+    // printf("inner_ip %s %s -> %s\n", proto_name(inner_ip->ip_p), inet_ntoa(inner_ip->ip_src), inet_ntoa(inner_ip->ip_dst));
+    // printf("outer_ip %s %s -> %s\n", proto_name(ip->ip_p), inet_ntoa(ip->ip_src), inet_ntoa(ip->ip_dst));
+
+    if (inner_ip == ip)
+        extract_l4_fields(l4, proto, &src_port, &dst_port, &l4_hdr_len, &is_tcp_fin, &is_tcp_ack, &is_tcp_rst, true);
+    else
+        extract_l4_fields(l4, proto, &src_port, &dst_port, &l4_hdr_len, &is_tcp_fin, &is_tcp_ack, &is_tcp_rst, false);
     
 
     // find an existing binding
     // time used for the binding is updated in nat_lookup_or_create_outbound
-    struct nat_binding e = nat_lookup_inbound(src_ip, src_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
+    struct nat_binding e;
+    if (inner_ip == ip)
+        e = nat_lookup_inbound(src_ip, src_port, dst_ip, dst_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
+    else
+        e = nat_lookup_inbound(dst_ip, dst_port, src_ip, src_port, proto, is_tcp_fin, is_tcp_ack, is_tcp_rst);
     if (!e.is_valid) return;
     // printf("Found entry for inbound translation:\n");
     // print_nat_entry(e, 0);
@@ -529,27 +554,51 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     ip->ip_dst.s_addr = htonl(e.int_ip);
     ip->ip_sum = 0;
     ip->ip_sum = checksum(ip, ip->ip_hl * 4);
-    if (proto == IPPROTO_TCP) {
-        struct tcphdr *t = l4;
-        t->dest = htons(e.int_port);
-        t->check = 0;
-        t->check = l4_checksum(ip, l4, l4_total_len);
-    } else if (proto == IPPROTO_UDP) {
-        struct udphdr *u = l4;
-        u->dest = htons(e.int_port);
-        u->check = 0;
-        u->check = l4_checksum(ip, l4, l4_total_len);
-    } else if (proto == IPPROTO_ICMP) {
-        struct icmphdr *icmp = l4;
-        if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
-            icmp->un.echo.id = htons(e.int_port);
-            icmp->checksum = 0;
-            icmp->checksum = checksum(l4, l4_total_len);
+    if (inner_ip == ip) {
+        if (proto == IPPROTO_TCP) {
+            struct tcphdr *t = l4;
+            t->dest = htons(e.int_port);
+            t->check = 0;
+            t->check = l4_checksum(ip, l4, l4_total_len);
+        } else if (proto == IPPROTO_UDP) {
+            struct udphdr *u = l4;
+            u->dest = htons(e.int_port);
+            u->check = 0;
+            u->check = l4_checksum(ip, l4, l4_total_len);
+        } else if (proto == IPPROTO_ICMP) {
+            struct icmphdr *icmp = l4;
+            if (icmp->type == ICMP_ECHO || icmp->type == ICMP_ECHOREPLY) {
+                icmp->un.echo.id = htons(e.int_port);
+                icmp->checksum = 0;
+                icmp->checksum = checksum(l4, l4_total_len);
+            } else {
+                assert(0 && "Unreachable");
+            }
         } else {
             assert(0 && "Unreachable");
         }
     } else {
-        assert(0 && "Unreachable");
+        assert(ip->ip_p == IPPROTO_ICMP);
+        struct icmphdr *icmp = (struct icmphdr *)(buf + sizeof(*eth) + ip->ip_hl * 4);
+        assert(icmp->type != ICMP_ECHO && icmp->type != ICMP_ECHOREPLY);
+        
+        // replace source ip address, and source port of inner_ip
+        inner_ip->ip_src.s_addr = htonl(e.int_ip);
+        inner_ip->ip_sum = 0;
+        inner_ip->ip_sum = checksum(inner_ip, inner_ip->ip_hl * 4);
+        if (proto == IPPROTO_TCP) {
+            struct tcphdr *t = l4;
+            t->source = htons(e.int_port);
+        } else if (proto == IPPROTO_UDP) {
+            struct udphdr *u = l4;
+            u->source = htons(e.int_port);
+        } else {
+            assert(0 && "Unreachable");
+        }
+
+        // recalc outer ICMP checksum
+        icmp->checksum = 0;
+        icmp->checksum = checksum(icmp, ntohs(ip->ip_len) - ip->ip_hl * 4);
     }
 
 
@@ -564,7 +613,7 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
                          0,
                          (struct sockaddr*)&dst,
                          sizeof(dst));
-    if (ret < 0) {
+    if (ret < 0 && ip->ip_p != IPPROTO_ICMP) {      // don't send error message for ICMP
         if (errno == EMSGSIZE) {
             int mtu = int_if_info.mtu;
             if (ntohs(ip->ip_off) & IP_DF) {
