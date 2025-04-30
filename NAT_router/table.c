@@ -31,6 +31,104 @@ bool is_ext_port_taken(uint16_t ext_port, uint8_t proto) {
     return false;
 }
 
+
+#ifdef USE_EBPF
+#include <bpf/libbpf.h>
+// #include <linux/bpf_helpers.h>
+#include <linux/bpf.h>
+
+
+int nat_map_fd = -1;
+int ifindex_map_fd = -1;
+struct bpf_object *bpf_obj = NULL;
+int table_init(const char *bpf_obj_path, const char *int_if, const char *ext_if)
+{
+    struct bpf_object *obj;
+    obj = bpf_object__open_file(bpf_obj_path, NULL);
+    assert(obj && "Fail to open BPF object file");
+
+    if (bpf_object__load(obj)) 
+        assert(false && "Fail to load BPF object file into kernel");
+    
+    // find the map by section name “nat_map”
+    nat_map_fd = bpf_object__find_map_fd_by_name(obj, "nat_map");
+    assert(nat_map_fd >= 0 && "Fail to find map nat_map");
+
+    // find and populate devmap
+    ifindex_map_fd = bpf_object__find_map_fd_by_name(obj, "ifindex_map");
+    assert(ifindex_map_fd >= 0 && "Fail to find map ifindex_map");
+
+    // lookup kernel ifindices by name
+    __u32 idx0 = 0, idx1 = 1;
+    __u32 ext_idx = if_nametoindex(ext_if);
+    __u32 int_idx = if_nametoindex(int_if);
+    assert(ext_idx > 0 && int_idx > 0 && "Fail to find ifindex");
+
+    // slot 0 → ext, slot 1 → int
+    bpf_map_update_elem(ifindex_map_fd, &idx0, &ext_idx, BPF_ANY);
+    bpf_map_update_elem(ifindex_map_fd, &idx1, &int_idx, BPF_ANY);
+
+    // keep object alive for attach later
+    bpf_obj = obj;
+
+    printf("Table init done!\n");
+
+    return 0;
+}
+
+void add_xdp_nat_entry(uint32_t int_ip, uint16_t int_port, uint32_t ext_ip, uint16_t ext_port, uint8_t proto) {
+    {
+        struct nat_key k = { .ip = int_ip, .port = int_port, .proto = proto };
+        struct nat_val v = { .ip = ext_ip, .port = ext_port, .last_used = 0};
+        bpf_map_update_elem(nat_map_fd, &k, &v, BPF_ANY);
+    }
+
+    {
+        struct nat_key k = { .ip = ext_ip, .port = ext_port, .proto = proto };
+        struct nat_val v = { .ip = int_ip, .port = int_port, .last_used = 0};
+        bpf_map_update_elem(nat_map_fd, &k, &v, BPF_ANY);
+    }
+}
+
+
+void del_xdp_nat_entry(uint32_t int_ip, uint16_t int_port, uint32_t ext_ip, uint16_t ext_port, uint8_t proto) {
+    struct nat_key k1 = { .ip = int_ip, .port = int_port, .proto = proto };
+    struct nat_key k2 = { .ip = ext_ip, .port = ext_port, .proto = proto };
+    bpf_map_delete_elem(nat_map_fd, &k1);
+    bpf_map_delete_elem(nat_map_fd, &k2);
+}
+
+uint64_t get_time_xdp_nat_entry(uint32_t int_ip, uint16_t int_port, uint32_t ext_ip, uint16_t ext_port, uint8_t proto) {
+    struct nat_key k1 = { .ip = int_ip, .port = int_port, .proto = proto };
+    struct nat_key k2 = { .ip = ext_ip, .port = ext_port, .proto = proto };
+    struct nat_val v1, v2;
+    if (bpf_map_lookup_elem(nat_map_fd, &k1, &v1) != 0)
+        return 0;
+    if (bpf_map_lookup_elem(nat_map_fd, &k2, &v2) != 0)
+        return 0;
+    return v1.last_used > v2.last_used ? v1.last_used : v2.last_used;
+}
+
+void reset_xdp_nat_entry() {
+    uint8_t key[sizeof(struct nat_key)];
+    uint8_t next_key[sizeof(struct nat_key)];
+
+    // Start with the first key in the map
+    if (bpf_map_get_next_key(nat_map_fd, NULL, key) != 0) {
+        // Map is already empty
+        return;
+    }
+
+    // Iterate through all keys and delete them
+    do {
+        if (bpf_map_delete_elem(nat_map_fd, key) != 0) {
+            perror("Failed to delete element from BPF map");
+        }
+    } while (bpf_map_get_next_key(nat_map_fd, key, next_key) == 0 && (memcpy(key, next_key, sizeof(key)), 1));
+}
+
+#endif
+
 struct nat_entry *nat_lookup(uint32_t ip, uint16_t port, uint8_t proto, int reverse) {
     if (!reverse) {
         pthread_rwlock_rdlock(&nat_internal_rwlock);
@@ -92,7 +190,12 @@ struct nat_binding nat_lookup_outbound(uint32_t src_ip, uint16_t src_port,
             // if TCP, update the connection status
             if ((!e->is_static) && proto == IPPROTO_TCP) {
                 if (is_tcp_ack && (e->tcp_status & 0b011) == 0b011) e->tcp_status |= 0b100;
-                if (is_tcp_fin) e->tcp_status |= 0b001;
+                if (is_tcp_fin) {
+                    e->tcp_status |= 0b001;
+#ifdef USE_EBPF
+                    del_xdp_nat_entry(e->int_ip, e->int_port, e->ext_ip, e->ext_port, e->proto);
+#endif
+                }
                 if (is_tcp_rst) e->tcp_status |= 0b111;
             }
 
@@ -139,7 +242,12 @@ struct nat_binding nat_lookup_inbound(uint32_t src_ip, uint16_t src_port,
                 // if TCP, update the connection status
                 if ((!e->is_static) && proto == IPPROTO_TCP) {
                     if (is_tcp_ack && (e->tcp_status & 0b11) == 0b11) e->tcp_status |= 0b100;
-                    if (is_tcp_fin) e->tcp_status |= 0b010;
+                    if (is_tcp_fin) {
+                        e->tcp_status |= 0b010;
+#ifdef USE_EBPF
+                        del_xdp_nat_entry(e->int_ip, e->int_port, e->ext_ip, e->ext_port, e->proto);
+#endif
+                    }
                     if (is_tcp_rst) e->tcp_status |= 0b111;
                 }
 
@@ -194,6 +302,10 @@ struct nat_binding nat_create_binding(uint32_t src_ip, uint16_t src_port,
     nat_external[e_idx] = e;
 
     binding = entry_to_binding(e);
+
+#ifdef USE_EBPF
+    add_xdp_nat_entry(e->int_ip, e->int_port, e->ext_ip, e->ext_port, e->proto);
+#endif
 
     entry_count++;
     pthread_rwlock_unlock(&nat_external_rwlock);
@@ -376,6 +488,19 @@ void nat_gc() {
             bool outdated = ((tcp_status & 0b100) == 0b100 && inactive_time > TCP_CLOSED_TTL) ||
                             ((tcp_status & 0b100) == 0 && proto == IPPROTO_TCP && inactive_time > TCP_INACTIVE_TTL) ||
                             (proto != IPPROTO_TCP && inactive_time > NAT_INACTIVE_TTL);
+#ifdef USE_EBPF
+            if (outdated) {
+                time_t last_used = get_time_xdp_nat_entry((*pp)->int_ip, (*pp)->int_port, 
+                    (*pp)->ext_ip, (*pp)->ext_port, (*pp)->proto);
+                if (last_used > (*pp)->ts) {
+                    (*pp)->ts = last_used;
+                    inactive_time = now - (*pp)->ts;
+                    outdated = ((tcp_status & 0b100) == 0b100 && inactive_time > TCP_CLOSED_TTL) ||
+                            ((tcp_status & 0b100) == 0 && proto == IPPROTO_TCP && inactive_time > TCP_INACTIVE_TTL) ||
+                            (proto != IPPROTO_TCP && inactive_time > NAT_INACTIVE_TTL);
+                }
+            }
+#endif
             if (outdated) {
                 entry_count--;
                 // printf("Deleting entry: proto : %u, tcp_status: %u, inactive time: %u\n", proto, tcp_status, inactive_time);
@@ -446,6 +571,10 @@ struct nat_binding nat_add_port_forward(uint32_t int_ip, uint16_t int_port,
 
     binding = entry_to_binding(e);
 
+#ifdef USE_EBPF
+    add_xdp_nat_entry(e->int_ip, e->int_port, e->ext_ip, e->ext_port, e->proto);
+#endif
+
     pthread_rwlock_unlock(&nat_external_rwlock);
     pthread_rwlock_unlock(&nat_internal_rwlock);
 
@@ -493,6 +622,10 @@ int nat_delete_port_forward(uint32_t int_ip, uint16_t int_port, uint32_t ext_if_
         }
         prev_int = &(*prev_int)->int_next;
     }
+
+#ifdef USE_EBPF
+    del_xdp_nat_entry(e->int_ip, e->int_port, e->ext_ip, e->ext_port, e->proto);
+#endif
 
     // 3) Free and decrement count
     free(e);
@@ -646,6 +779,10 @@ void nat_reset() {
 
     // Reset entry count
     entry_count = 0;
+
+#ifdef USE_EBPF
+    reset_xdp_nat_entry();
+#endif
 
     // Release locks
     pthread_rwlock_unlock(&nat_external_rwlock);

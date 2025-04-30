@@ -97,4 +97,15 @@ void print_nat_table(int static_only);
 void get_nat_table_string(char *buf, size_t bufsize, int static_only);
 void print_nat_entry(struct nat_entry *e, int static_only);
 
+#ifdef USE_EBPF
+#include "nat_kern.h"
+#include <bpf/bpf.h>
+#include <linux/bpf.h>
+
+extern int nat_map_fd;       // fd of BPF_MAP_TYPE_HASH “nat_map”
+extern int ifindex_map_fd;   // fd of BPF_MAP_TYPE_DEVMAP “ifindex_map”
+extern struct bpf_object *bpf_obj;
+int  table_init(const char *bpf_obj_path, const char *int_if, const char *ext_if);
+#endif
+
 #endif

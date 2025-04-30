@@ -41,6 +41,11 @@ interface_info int_if_info, ext_if_info;
 int outward_sock = -1;
 int inward_sock = -1;
 
+#ifdef USE_EBPF
+#include <bpf/libbpf.h>
+struct bpf_link *link_out = NULL, *link_in = NULL;
+#endif
+
 // sent, received, stored in network byte order
 typedef struct {
     uint32_t int_ip;
@@ -587,6 +592,21 @@ void* nat_gc_thread_func(void *arg) {
 
 void cleanup(int sig) {
     running = 0;
+
+#ifdef USE_EBPF
+    if (link_out) {
+        bpf_link__destroy(link_out);
+        link_out = NULL;
+    }
+    if (link_in) {
+        bpf_link__destroy(link_in);
+        link_in = NULL;
+    }
+    if (bpf_obj) {
+        bpf_object__close(bpf_obj);
+        bpf_obj = NULL;
+    }
+#endif
 }
 
 
@@ -655,6 +675,21 @@ int main(int argc, char *argv[]) {
 
     pthread_t internal_thread, external_thread, gc_thread, admin_thread;
 
+#ifdef USE_EBPF
+    if (table_init("nat_kern.o", argv[1], argv[2])) {
+        fprintf(stderr, "ERROR: failed to load BPF nat_kern.o\n");
+        return 1;
+    }
+    // now attach each XDP program by section name:
+    struct bpf_program *p_out = bpf_object__find_program_by_name(bpf_obj, "xdp_nat_out");
+    struct bpf_program *p_in  = bpf_object__find_program_by_name(bpf_obj, "xdp_nat_in");
+    int if_int = if_nametoindex(argv[1]); // eth1
+    int if_ext = if_nametoindex(argv[2]); // eth0
+    link_out = bpf_program__attach_xdp(p_out, if_int);
+    if (!link_out) { perror("attach out"); exit(1); }
+    link_in  = bpf_program__attach_xdp(p_in,  if_ext);
+    if (!link_in)  { perror("attach in");  exit(1); }
+#endif
 
     if (pthread_create(&admin_thread, NULL, admin_thread_func, NULL) != 0) {
         perror("Failed to create admin thread");
