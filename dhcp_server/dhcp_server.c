@@ -173,6 +173,9 @@ void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet
                     inet_ntop(AF_INET, &addr, ip_str, INET_ADDRSTRLEN);
                     printf("Successfully renew ip %s\n", ip_str);
                 }
+                else {
+                    printf("The renew request is denied\n");
+                }
             }
             // for initialization & rebindimh
             else

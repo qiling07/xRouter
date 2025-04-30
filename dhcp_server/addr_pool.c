@@ -173,6 +173,13 @@ void release_addr_pool(struct addr_pool *pool){
 }
 
 struct binding* try_renew(struct addr_pool *pool, uint32_t ip, const uint8_t c_mac[6], uint32_t l_time){
+    // if the mac address is assigned a fixed IP by the manager
+    struct reservation *r = get_reservation_w_mac(pool, c_mac);
+    if (r && r->ip != ip)
+    {
+        return NULL;
+    }
+    
     for (int i = 0; i < pool->pool_size; i++)
     {
         if (ip == pool->bindings[i].ip && pool->bindings[i].is_leased == 1 
