@@ -99,7 +99,7 @@ def handle_client(conn, addr):
         conn.close()
         return
 
-    conn.sendall(b"Welcome to NAT-portal. Type 'help' for commands.\n")
+    conn.sendall(b"Welcome to NAT Management Portal. Type 'help' for commands.\n")
     while True:
         conn.sendall(b"nat> ")
         data = conn.recv(256)
@@ -113,29 +113,29 @@ def handle_client(conn, addr):
         if cmd == "help":
             conn.sendall(b"""\
 Commands:
-  print
-  reset
-  add <domain>
-  del <domain>
-  show
+  print_nat
+  reset_nat
+  filter_add <domain> <ip>
+  filter_del <domain> <ip>
+  show_filters
   forward <int_ip> <int_port> <ext_port>
   unforward <int_ip> <int_port> <ext_port>
   show_forwarding
   latency <network/CIDR>
-  allow        <network/CIDR>
-  deny         <network/CIDR>
-  show_allowed
-  passwd
+  portal_allow_net        <network/CIDR>
+  portal_deny_net         <network/CIDR>
+  show_portal_allowed_net
+  reset_credentials
   exit
 """)
             continue
 
-        if cmd.startswith("allow "):
+        if cmd.startswith("portal_allow_net "):
             try:
                 _, cidr = cmd.split(None, 1)
                 new_net = ipaddress.IPv4Network(cidr, strict=False)
             except:
-                conn.sendall(b"Usage: allow <network/CIDR>\n")
+                conn.sendall(b"Usage: portal_allow_net <network/CIDR>\n") 
                 continue
             merged = list(ipaddress.collapse_addresses(ALLOWED_NETWORKS + [new_net]))
             ALLOWED_NETWORKS.clear()
@@ -144,12 +144,12 @@ Commands:
             conn.sendall(f"Allowed {new_net}\n".encode())
             continue
 
-        if cmd.startswith("deny "):
+        if cmd.startswith("portal_deny_net "):
             try:
                 _, cidr = cmd.split(None, 1)
                 deny_net = ipaddress.IPv4Network(cidr, strict=False)
             except:
-                conn.sendall(b"Usage: deny <network/CIDR>\n")
+                conn.sendall(b"Usage: portal_deny_net <network/CIDR>\n")
                 continue
             survivors = []
             for net in ALLOWED_NETWORKS:
@@ -163,7 +163,7 @@ Commands:
             conn.sendall(f"Denied {deny_net}\n".encode())
             continue
 
-        if cmd == "show_allowed":
+        if cmd == "show_portal_allowed_net":
             conn.sendall(b"Allowed networks:\n")
             for net in ALLOWED_NETWORKS:
                 conn.sendall(f"  {net}\n".encode())
@@ -172,7 +172,7 @@ Commands:
                 conn.sendall(f"  {ip}\n".encode())
             continue
 
-        if cmd == "passwd":
+        if cmd == "reset_credentials":
             conn.sendall(b"New username: ")
             nu = conn.recv(100).decode().strip()
             conn.sendall(b"New password: ")

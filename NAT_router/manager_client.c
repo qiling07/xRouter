@@ -2,18 +2,28 @@
  * manager.c – Management tool for the NAT-ROUTER
  *
  * Supports the following commands:
- *   print             —— Print the current NAT table (PRINT_NAT_TABLE)
- *   add <domain>      —— Add a domain filter rule (ADD_FILTER <domain>)
- *   del <domain>      —— Delete a domain filter rule (DEL_FILTER <domain>)
- *   show              —— Show all domain filter rules (SHOW_FILTERS)
+ *   print_nat             —— Print the current NAT table (PRINT_NAT_TABLE)
+ *   reset_nat             —— Reset the NAT table (RESET_NAT_TABLE)
+ *   filter_add <domain> <ip>  —— Add a domain filter rule (ADD_FILTER <domain> <ip>)
+ *   filter_del <domain> <ip>  —— Delete a domain filter rule (DEL_FILTER <domain> <ip>)
+ *   show_filters          —— Show all domain filter rules (SHOW_FILTERS)
+ *   forward <internal_ip> <internal_port> <external_port>  —— Set up port forwarding rule (PORT_FORWARD)
+ *   unforward <internal_ip> <internal_port> <external_port>  —— Cancel port forwarding rule (PORT_FORWARD)
+ *   show_forwarding       —— Show forwarding rule (PORT_FORWARD)
+ *   latency <network/CIDR>  —— Probe latency to each internal host (LATENCY)
  *
  * Usage:
- *   ./manager <command> [domain]
+ *   ./manager_client <command> [domain]
  * Examples:
- *   ./manager print
- *   ./manager add example.com
- *   ./manager del facebook.com
- *   ./manager show
+ *   ./manager_client print_nat
+ *   ./manager_client reset_nat
+ *   ./manager_client filter_add example.com 192.168.20.10
+ *   ./manager_client filter_del example.com 192.168.20.10
+ *   ./manager_client show_filters
+ *   ./manager_client forward 192.168.20.10 8080 80
+ *   ./manager_client unforward 192.168.20.10 8080 80
+ *   ./manager_client show_forwarding
+ *   ./manager_client latency 192.168.0.1/24
  */
 
  #include <stdio.h>
@@ -22,7 +32,7 @@
  #include <unistd.h>
  #include <arpa/inet.h>
  
-#define SERVER_IP       "127.0.0.1"   // Change to the corresponding IP if the router is running on another address
+ #define SERVER_IP       "127.0.0.1"   // Change to the corresponding IP if the router is running on another address
  #define SERVER_PORT     9999
  #define MAX_BUFFER      16384
  #define CMD_MAX_LEN     512
@@ -32,12 +42,14 @@ static void print_usage(const char *prog) {
     fprintf(stderr,
         "Usage: %s <command> [domain]\n"
         "Commands:\n"
-        "  print            Print NAT table\n"
-        "  reset            Reset NAT table\n"
-        "  add   <domain>   Add domain filter rule\n"
-        "  del   <domain>   Delete domain filter rule\n"
-        "  show             Show all domain filter rules\n"
+        "  print_nat            Print NAT table\n"
+        "  reset_nat            Reset NAT table\n"
+        "  filter_add   <domain> <ip>  Add domain filter rule\n"
+        "  filter_del   <domain> <ip>  Delete domain filter rule\n"
+        "  show_filters             Show all domain filter rules\n"
         "  forward <internal_ip> <internal_port> <external_port>   Set up port forwarding rule (PORT_FORWARD)\n"
+        "  unforward <internal_ip> <internal_port> <external_port>   Delete port forwarding rule (PORT_FORWARD)\n"
+        "  show_forwarding   Show forwarding rule (PORT_FORWARD)\n"
         "  latency          Probe latency to each internal host (LATENCY)\n",
         prog);
 }
@@ -118,29 +130,29 @@ static void print_usage(const char *prog) {
      }
  
     // Construct request string based on the first argument
-     if (strcmp(argv[1], "print") == 0) {
+     if (strcmp(argv[1], "print_nat") == 0) {
          snprintf(command, sizeof(command), "PRINT_NAT_TABLE");
      }
-     else if (strcmp(argv[1], "reset") == 0) {
+     else if (strcmp(argv[1], "reset_nat") == 0) {
          snprintf(command, sizeof(command), "RESET_NAT_TABLE");
      }
-     else if (strcmp(argv[1], "add") == 0) {
+     else if (strcmp(argv[1], "filter_add") == 0) {
          if (argc != 4) {
-             fprintf(stderr, "Error: 'add' requires a domain AND ip argument\n");
+             fprintf(stderr, "Error: 'filter_add' requires a domain AND ip argument\n");
              print_usage(argv[0]);
              return EXIT_FAILURE;
          }
          snprintf(command, sizeof(command), "ADD_FILTER %s %s", argv[2], argv[3]);
      }
-     else if (strcmp(argv[1], "del") == 0) {
+     else if (strcmp(argv[1], "filter_del") == 0) {
          if (argc != 4) {
-             fprintf(stderr, "Error: 'del' requires a domain AND ip argument\n");
+             fprintf(stderr, "Error: 'filter_del' requires a domain AND ip argument\n");
              print_usage(argv[0]);
              return EXIT_FAILURE;
          }
          snprintf(command, sizeof(command), "DEL_FILTER %s %s", argv[2], argv[3]);
      }
-    else if (strcmp(argv[1], "show") == 0) {
+    else if (strcmp(argv[1], "show_filters") == 0) {
         snprintf(command, sizeof(command), "SHOW_FILTERS");
     }
     else if (strcmp(argv[1], "forward") == 0) {
