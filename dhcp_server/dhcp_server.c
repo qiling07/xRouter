@@ -402,10 +402,10 @@ void *admin_thread_func(void *arg) {
                 }
                 else
                 {
-                    fprintf(stderr, "Successfully set lease time: %02x:%02x:%02x:%02x:%02x:%02x: %d.\n",
+                    fprintf(stderr, "Successfully set lease time: %02x:%02x:%02x:%02x:%02x:%02x: %u.\n",
                         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], lease_time);
                     char usage[512];
-                    snprintf(usage, sizeof(usage), "Successfully set lease time: %02x:%02x:%02x:%02x:%02x:%02x: %d.\n",
+                    snprintf(usage, sizeof(usage), "Successfully set lease time: %02x:%02x:%02x:%02x:%02x:%02x: %u.\n",
                         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], lease_time);
                     sendto(admin_fd, usage, strlen(usage), 0,
                         (struct sockaddr*)&client_addr, client_addr_len);
@@ -593,10 +593,11 @@ int main(int argc, char *argv[]){
             case MTC_DHCPDECLINE:
                 process_dhcp_decline();
                 break;
-            case MTC_DHCPRELEASE:
+            case MTC_DHCPRELEASE: {
                 uint32_t client_ip = ntohl(addr_c.sin_addr.s_addr);
                 process_dhcp_release(server, client_ip, packet, &op_list);
                 break;
+		}
             case MTC_DHCPINFORM:
                 process_dhcp_inform();
                 break;
