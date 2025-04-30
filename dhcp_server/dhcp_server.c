@@ -39,16 +39,40 @@ void process_dhcp_discover(struct dhcp_server *server, struct dhcp_packet *packe
     inet_pton(AF_INET, server->conf.ip_addr, &(reply->options[options_ofst]));
     options_ofst += 4;
 
+    // set lease time
     reply->options[options_ofst++] = OC_LEASE_TIME;
     reply->options[options_ofst++] = 4;
-    uint32_t lease_time_nbo = htonl(server->conf.lease_time);
+    pthread_mutex_lock(&(server->pool->manage.mlt_lock));
+    struct mac_lease_time *mlt = get_mac_lease_time(server->pool, packet->chaddr);\
+    pthread_mutex_unlock(&(server->pool->manage.mlt_lock));
+    uint32_t lease_time_nbo;
+    if (mlt)
+        lease_time_nbo = htonl(mlt->lease_time);
+    else
+        lease_time_nbo = htonl(server->conf.lease_time);
     memcpy(&reply->options[options_ofst], &lease_time_nbo, 4);
     options_ofst += 4;
 
+    // set renew time
     reply->options[options_ofst++] = OC_RENEWAL_TIME;
     reply->options[options_ofst++] = 4;
-    uint32_t renew_time_nbo = htonl(server->conf.renew_time);
+    uint32_t renew_time_nbo;
+    if (mlt)
+        renew_time_nbo = htonl(mlt->lease_time/2);
+    else
+        renew_time_nbo = htonl(server->conf.renew_time);
     memcpy(&reply->options[options_ofst], &renew_time_nbo, 4);
+    options_ofst += 4;
+
+    // set rebind time
+    reply->options[options_ofst++] = OC_REBINDING_TIME;
+    reply->options[options_ofst++] = 4;
+    uint32_t rebind_time_nbo;
+    if (mlt)
+    rebind_time_nbo = htonl(mlt->lease_time * 4 / 5);
+    else
+    rebind_time_nbo = htonl(server->conf.rebinding_time);
+    memcpy(&reply->options[options_ofst], &rebind_time_nbo, 4);
     options_ofst += 4;
 
     // set parameters according to the parameter request list
@@ -89,18 +113,6 @@ void process_dhcp_discover(struct dhcp_server *server, struct dhcp_packet *packe
             inet_pton(AF_INET, server->conf.dns_ip, &(reply->options[options_ofst]));
             options_ofst += 4;
             break;
-        // case OC_LEASE_TIME:
-        //     reply->options[options_ofst++] = parameters_tlv->value[i];
-        //     reply->options[options_ofst++] = 4;
-        //     memcpy(&reply->options[options_ofst], &server->conf.lease_time, 4);
-        //     options_ofst += 4;
-        //     break;
-        // case OC_RENEWAL_TIME:
-        //     reply->options[options_ofst++] = parameters_tlv->value[i];
-        //     reply->options[options_ofst++] = 4;
-        //     memcpy(&reply->options[options_ofst], &server->conf.renew_time, 4);
-        //     options_ofst += 4;
-        //     break;
         case OC_REBINDING_TIME:
             reply->options[options_ofst++] = parameters_tlv->value[i];
             reply->options[options_ofst++] = 4;
@@ -117,12 +129,12 @@ void process_dhcp_discover(struct dhcp_server *server, struct dhcp_packet *packe
 }
 
 void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet, struct option_list *options, struct dhcp_packet *reply, size_t *len, uint8_t *send_packet){
-    // check wether the server is selectsed
+    // check wether the server is selected
     struct option_tlv* server_id_tlv = get_option_tlv(options, OC_SERVER_ID);
-    struct in_addr ip_addr;
-    inet_pton(AF_INET, server->conf.ip_addr, &ip_addr);
-    // FIXME: patch for renewal
-    if (server_id_tlv == NULL || server_id_tlv != NULL && memcmp(&(ip_addr.s_addr), server_id_tlv->value, 4) == 0)
+    uint32_t ip_no = ip_str_to_network_order(server->conf.ip_addr);
+    
+    // `server_id_tlv == NULL` indicates this packet is unicast to the server (renew) or broadcast to the server in the rebinding phase
+    if (server_id_tlv == NULL || server_id_tlv != NULL && memcmp(&ip_no, server_id_tlv->value, 4) == 0)
     {
         // is selected
         // commit the binding
@@ -146,10 +158,11 @@ void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet
 
             uint32_t request_ip; // network order
             struct binding *b;
-            // for renewal
+            // for renewal & rebinding
             if (server_id_tlv == NULL)
             {
-                // In a renew request, the request_ip is the ciaddr 
+                // renew request do not have OC_REQUESTED_IP
+                // In a renew/rebinding request, the request_ip is the ciaddr
                 request_ip = packet->ciaddr;
                 b = try_renew(server->pool, ntohl(packet->ciaddr), packet->chaddr, server->conf.lease_time);
                 if (b)
@@ -161,9 +174,9 @@ void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet
                     printf("Successfully renew ip %s\n", ip_str);
                 }
             }
+            // for initialization & rebindimh
             else
             {
-                // renew request do not have OC_REQUESTED_IP
                 // get option 50 (OC_REQUESTED_IP)
                 struct option_tlv* requesr_ip_tlv = get_option_tlv(options, OC_REQUESTED_IP);
                 memcpy(&request_ip, requesr_ip_tlv->value, 4);
@@ -191,16 +204,40 @@ void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet
             inet_pton(AF_INET, server->conf.ip_addr, &(reply->options[options_ofst]));
             options_ofst += 4;
 
+            // set lease time
             reply->options[options_ofst++] = OC_LEASE_TIME;
             reply->options[options_ofst++] = 4;
-            uint32_t lease_time_nbo = htonl(server->conf.lease_time);
+            pthread_mutex_lock(&(server->pool->manage.mlt_lock));
+            struct mac_lease_time *mlt = get_mac_lease_time(server->pool, packet->chaddr);
+            pthread_mutex_unlock(&(server->pool->manage.mlt_lock));
+            uint32_t lease_time_nbo;
+            if (mlt)
+                lease_time_nbo = htonl(mlt->lease_time);
+            else
+                lease_time_nbo = htonl(server->conf.lease_time);
             memcpy(&reply->options[options_ofst], &lease_time_nbo, 4);
             options_ofst += 4;
 
+            // set renew time
             reply->options[options_ofst++] = OC_RENEWAL_TIME;
             reply->options[options_ofst++] = 4;
-            uint32_t renew_time_nbo = htonl(server->conf.renew_time);
+            uint32_t renew_time_nbo;
+            if (mlt)
+                renew_time_nbo = htonl(mlt->lease_time/2);
+            else
+                renew_time_nbo = htonl(server->conf.renew_time);
             memcpy(&reply->options[options_ofst], &renew_time_nbo, 4);
+            options_ofst += 4;
+
+            // set rebind time
+            reply->options[options_ofst++] = OC_REBINDING_TIME;
+            reply->options[options_ofst++] = 4;
+            uint32_t rebind_time_nbo;
+            if (mlt)
+            rebind_time_nbo = htonl(mlt->lease_time * 4 / 5);
+            else
+            rebind_time_nbo = htonl(server->conf.rebinding_time);
+            memcpy(&reply->options[options_ofst], &rebind_time_nbo, 4);
             options_ofst += 4;
                     
             // TODO: refactor code
@@ -241,24 +278,6 @@ void process_dhcp_request(struct dhcp_server *server, struct dhcp_packet *packet
                     inet_pton(AF_INET, server->conf.dns_ip, &(reply->options[options_ofst]));
                     options_ofst += 4;
                     break;
-                // case OC_LEASE_TIME:
-                //     reply->options[options_ofst++] = parameters_tlv->value[i];
-                //     reply->options[options_ofst++] = 4;
-                //     memcpy(&reply->options[options_ofst], &server->conf.lease_time, 4);
-                //     options_ofst += 4;
-                //     break;
-                // case OC_RENEWAL_TIME:
-                //     reply->options[options_ofst++] = parameters_tlv->value[i];
-                //     reply->options[options_ofst++] = 4;
-                //     memcpy(&reply->options[options_ofst], &server->conf.renew_time, 4);
-                //     options_ofst += 4;
-                //     break;
-                case OC_REBINDING_TIME:
-                    reply->options[options_ofst++] = parameters_tlv->value[i];
-                    reply->options[options_ofst++] = 4;
-                    memcpy(&reply->options[options_ofst], &server->conf.rebinding_time, 4);
-                    options_ofst += 4;
-                    break;
                 default:
                     break;
                 }
@@ -297,9 +316,8 @@ void process_dhcp_release(struct dhcp_server *server, uint32_t client_ip, struct
     struct option_tlv *server_id_tlv = get_option_tlv(options, OC_SERVER_ID);
     uint32_t server_id_no;
     memcpy(&server_id_no, server_id_tlv->value, server_id_tlv->len);
-    struct in_addr ip_addr;
-    inet_pton(AF_INET, server->conf.ip_addr, &ip_addr);
-    if (server_id_no != ip_addr.s_addr)
+    uint32_t ip_no = ip_str_to_network_order(server->conf.ip_addr);
+    if (server_id_no != ip_no)
     {
         printf("OC_SERVER_ID does not match with the server ip\n");
         return;
@@ -322,6 +340,133 @@ void process_dhcp_release(struct dhcp_server *server, uint32_t client_ip, struct
 
 void process_dhcp_inform(){
     printf("Haven't implemented yet\n");
+}
+
+// Receive command from the admin (similar)
+void *admin_thread_func(void *arg) {
+    struct dhcp_server *server = (struct dhcp_server *)arg;
+
+    int admin_fd;
+    struct sockaddr_in admin_addr, client_addr;
+    socklen_t client_addr_len;
+    char admin_buf[1024];
+    char nat_table_str[16384];
+    admin_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (admin_fd < 0) {
+        perror("Admin thread: socket creation failed");
+        pthread_exit(NULL);
+    }
+
+    memset(&admin_addr, 0, sizeof(admin_addr));
+    admin_addr.sin_family = AF_INET;
+    admin_addr.sin_addr.s_addr = INADDR_ANY;
+    admin_addr.sin_port = htons(9998);
+
+    if (bind(admin_fd, (struct sockaddr *)&admin_addr, sizeof(admin_addr)) < 0) {
+        perror("Admin thread: bind failed");
+        close(admin_fd);
+        pthread_exit(NULL);
+    }
+
+    printf("Admin thread: listening on port 9998...\n");
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+    setsockopt(admin_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    while (1) {
+        client_addr_len = sizeof(client_addr);
+        int n = recvfrom(admin_fd, admin_buf, sizeof(admin_buf) - 1, 0,
+                           (struct sockaddr *)&client_addr, &client_addr_len);
+        if (n < 0) {
+            // perror("Admin thread: recvfrom failed");
+            continue;
+        }
+        printf("Admin thread: received command: %s\n", admin_buf);
+        if (strncmp(admin_buf, "SET_LEASE_TIME ", 15) == 0)
+        {
+            uint8_t mac[MAC_ADDR_LENGTH];
+            uint32_t lease_time;
+
+            const char *params_p = admin_buf + 15;
+            
+            if (sscanf(params_p, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx %u", &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5], &lease_time) == 7)
+            {
+                pthread_mutex_lock(&(server->pool->manage.mlt_lock));
+                uint8_t suc = set_ip_lease_time(server->pool, mac, lease_time);
+                pthread_mutex_unlock(&(server->pool->manage.mlt_lock));
+                if (!suc)
+                {
+                    fprintf(stderr, "set lease time failed.\n");
+                    const char *usage = "set lease time failed.\n";
+                    sendto(admin_fd, usage, strlen(usage), 0,
+                        (struct sockaddr*)&client_addr, client_addr_len);
+                }
+                else
+                {
+                    fprintf(stderr, "Successfully set lease time: %02x:%02x:%02x:%02x:%02x:%02x: %d.\n",
+                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], lease_time);
+                    char usage[512];
+                    snprintf(usage, sizeof(usage), "Successfully set lease time: %02x:%02x:%02x:%02x:%02x:%02x: %d.\n",
+                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], lease_time);
+                    sendto(admin_fd, usage, strlen(usage), 0,
+                        (struct sockaddr*)&client_addr, client_addr_len);
+                }
+            }
+            else
+            {
+                fprintf(stderr, "Invalid SET_LEASE_TIME format.\n");
+                const char *usage = "Invalid SET_LEASE_TIME format.\n";
+                sendto(admin_fd, usage, strlen(usage), 0,
+                    (struct sockaddr*)&client_addr, client_addr_len);
+            }
+        }
+        else if (strncmp(admin_buf, "RESERVE_IP ", 10) == 0)
+        {
+            uint8_t mac[MAC_ADDR_LENGTH];
+            char ip_str[INET_ADDRSTRLEN];
+            uint32_t ip_ho;
+
+            const char *params_p = admin_buf + 10;
+            
+            if (sscanf(params_p, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx %s", &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5], ip_str) == 7)
+            {
+                ip_ho = ip_str_to_host_order(ip_str);
+                pthread_mutex_lock(&(server->pool->manage.reservations_lock));
+                uint8_t suc = set_reservation(server->pool, mac, ip_ho);
+                pthread_mutex_unlock(&(server->pool->manage.reservations_lock));
+                if (!suc)
+                {
+                    fprintf(stderr, "reserve ip failed.\n");
+                    const char *usage = "reserve ip failed.\n";
+                    sendto(admin_fd, usage, strlen(usage), 0,
+                        (struct sockaddr*)&client_addr, client_addr_len);
+                }
+                else
+                {
+                    fprintf(stderr, "Successfully reserve ip: %02x:%02x:%02x:%02x:%02x:%02x %s.\n",
+                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], ip_str);
+                    char usage[512];
+                    snprintf(usage, sizeof(usage), "Successfully reserve ip: %02x:%02x:%02x:%02x:%02x:%02x %s.\n",
+                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], ip_str);
+                    sendto(admin_fd, usage, strlen(usage), 0,
+                        (struct sockaddr*)&client_addr, client_addr_len);
+                }
+            }
+            else
+            {
+                fprintf(stderr, "Invalid RESERVE_IP format.\n");
+                const char *usage = "Invalid RESERVE_IP format.\n";
+                sendto(admin_fd, usage, strlen(usage), 0,
+                    (struct sockaddr*)&client_addr, client_addr_len);
+            }
+        }
+        else {
+            const char *resp = "UNKNOWN COMMAND\n";
+            sendto(admin_fd, resp, strlen(resp), 0,
+                (struct sockaddr*)&client_addr, client_addr_len);
+        }
+    }
+    // close(admin_fd);
+    // pthread_exit(NULL);
 }
 
 int main(int argc, char *argv[]){
@@ -373,7 +518,13 @@ int main(int argc, char *argv[]){
     broadcast_addr.sin_port = htons(68);
     broadcast_addr.sin_addr.s_addr = inet_addr("255.255.255.255");
 
-            
+    // Create a thread to communicate with the manager client
+    pthread_t admin_thread;
+    if (pthread_create(&admin_thread, NULL, admin_thread_func, (void *)server) != 0) {
+        perror("An error occurs when creating the manager thread\n");
+        exit(-1);
+    }
+
     while (1)
     {
         addr_len = sizeof(addr_c);
@@ -398,7 +549,6 @@ int main(int argc, char *argv[]){
             memset(&reply_packet, 0, sizeof(struct dhcp_packet));
             size_t reply_len = -1;
 
-
             switch (message_type)
             {
             case MTC_INVALID:
@@ -419,13 +569,25 @@ int main(int argc, char *argv[]){
                 {
                     uint8_t send = 0;
                     process_dhcp_request(server, packet, &op_list, &reply_packet, &reply_len, &send);
-                    // TODO: Using broadcast or unicast should depend on the broadcast flag in the DUCP header and whether the client has obtained an IP address or not
                     if (send == 0) break;
-                    if (sendto(server->sock, &(reply_packet), reply_len, 0, (struct sockaddr *)&broadcast_addr, sizeof(broadcast_addr)) < 0)
+                    // check `flag`
+                    if (packet->flags == F_UNICAST)
                     {
-                        perror("An error occurs when sending a DHCPACK/DHCPNAK packet\n");
-                        exit(-1);
+                        if (sendto(server->sock, &(reply_packet), reply_len, 0, (struct sockaddr *)&broadcast_addr, sizeof(broadcast_addr)) < 0)
+                        {
+                            perror("An error occurs when sending a DHCPACK/DHCPNAK packet\n");
+                            exit(-1);
+                        }
                     }
+                    else {
+                        if (sendto(server->sock, &(reply_packet), reply_len, 0, (struct sockaddr *)&addr_c, sizeof(addr_c)) < 0)
+                        {
+                            perror("An error occurs when sending a DHCPACK/DHCPNAK packet\n");
+                            exit(-1);
+                        }
+                    }
+                    printf("Send a packet:\n");
+                    print_dhcp_header(&reply_packet);
                     break;
                 }
             case MTC_DHCPDECLINE:

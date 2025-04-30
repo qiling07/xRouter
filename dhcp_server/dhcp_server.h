@@ -73,15 +73,6 @@ int set_hwaddr(const char *ifname, struct dhcp_conf *conf) {
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
     ifr.ifr_name[IFNAMSIZ - 1] = '\0';
 
-    // // Get IP address
-    // if (ioctl(sockfd, SIOCGIFADDR, &ifr) == -1) {
-    //     perror("ioctl SIOCGIFADDR");
-    //     close(sockfd);
-    //     return -1;
-    // }
-    // struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
-    // conf->ip_addr = sin->sin_addr;
-
     // Get hardware (MAC) address
     memset(&ifr, 0, sizeof(ifr));
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
@@ -108,11 +99,11 @@ void parse_dhcp_conf(struct dhcp_conf *conf){
     conf->dns_ip = strdup("8.8.8.8");
     conf->domain_name = strdup("router.vm");
     conf->start_ip = strdup("192.168.20.101");
-    conf->end_ip = strdup("192.168.10.200");
+    conf->end_ip = strdup("192.168.20.200");
     conf->pool_size = 100;
-    conf->lease_time = 600; // 600
-    conf->renew_time = 300; // 300
-    conf->rebinding_time = 525; // 525
+    conf->lease_time = 60; // 600
+    conf->renew_time = 30; // 300
+    conf->rebinding_time = 50; // 525
 }
 
 #endif
