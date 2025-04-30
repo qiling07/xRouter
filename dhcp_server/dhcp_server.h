@@ -90,8 +90,8 @@ int set_hwaddr(const char *ifname, struct dhcp_conf *conf) {
 void parse_dhcp_conf(struct dhcp_conf *conf){
     // TODO: read parameters from the configuration file or pass parameters via command-line flags
     conf->ip_addr = strdup("192.168.20.1");
-    conf->isp_interface = strdup("enp0s3");
-    conf->lan_interface = strdup("enp0s8");
+    conf->isp_interface = strdup("eth0");
+    conf->lan_interface = strdup("eth1");
     set_hwaddr(conf->isp_interface, conf);
     conf->gateway = strdup("192.168.20.1");
     conf->netmask = strdup("255.255.255.0");
