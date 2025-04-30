@@ -506,6 +506,9 @@ void nat_gc() {
                 // printf("Deleting entry: proto : %u, tcp_status: %u, inactive time: %u\n", proto, tcp_status, inactive_time);
                 struct nat_entry *old = *pp;
                 *pp = old->int_next;
+#ifdef USE_EBPF
+                del_xdp_nat_entry(old->int_ip, old->int_port, old->ext_ip, old->ext_port, old->proto);
+#endif
                 // Remove from external hash table
                 unsigned ex_idx = hash_external(old->ext_port, old->proto);
                 struct nat_entry **qp = &nat_external[ex_idx];

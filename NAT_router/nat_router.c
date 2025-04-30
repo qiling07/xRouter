@@ -594,6 +594,9 @@ void cleanup(int sig) {
     running = 0;
 
 #ifdef USE_EBPF
+    if (unlink("/sys/fs/bpf/nat_map") != 0 && errno != ENOENT) {
+        perror("cleanup: unlink nat_map");
+    }
     if (link_out) {
         bpf_link__destroy(link_out);
         link_out = NULL;
@@ -679,6 +682,11 @@ int main(int argc, char *argv[]) {
     if (table_init("nat_kern.o", argv[1], argv[2])) {
         fprintf(stderr, "ERROR: failed to load BPF nat_kern.o\n");
         return 1;
+    }
+    unlink("/sys/fs/bpf/nat_map");
+    if (bpf_obj_pin(nat_map_fd, "/sys/fs/bpf/nat_map") != 0) {
+        perror("bpf_obj_pin_map");
+        return -1;
     }
     // now attach each XDP program by section name:
     struct bpf_program *p_out = bpf_object__find_program_by_name(bpf_obj, "xdp_nat_out");
