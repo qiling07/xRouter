@@ -1,3 +1,14 @@
+## Test Pipeline
+
+- Put the code in both the host and the server.
+- Run the DHCP server
+- Run NAT server on the server
+  ```
+  cd NAT_router
+  make
+  make config
+  ./nat_router INTERFACE_INT INTERFACE_EXT
+  ```
 ## Usage
 
 NAT router that forwards packets. Current support `ping` and UDP-based DNS query.
