@@ -383,6 +383,7 @@ void *admin_thread_func(void *arg) {
             // perror("Admin thread: recvfrom failed");
             continue;
         }
+	admin_buf[n] = '\0';
         printf("Admin thread: received command: %s\n", admin_buf);
         if (strncmp(admin_buf, "SET_LEASE_TIME ", 15) == 0)
         {
