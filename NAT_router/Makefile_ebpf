@@ -1,0 +1,12 @@
+BPF_CLANG = clang
+BPF_CFLAGS = -O2 -g -target bpf 
+LIBBPF_CFLAGS = $(shell pkg-config --cflags libbpf)
+LIBBPF_LIBS = $(shell pkg-config --libs   libbpf)
+ 
+all: nat_router nat_kern.o
+
+nat_kern.o: nat_kern.c
+	$(BPF_CLANG) $(BPF_CFLAGS) -c $< -o $@
+
+nat_router: nat_router.c table.c utils.c debug_print.c filter/filter.c latency.c
+	g++ -D USE_EBPF $(LIBBPF_CFLAGS) -fpermissive -Ifilter $^ -o $@ $(LIBBPF_LIBS) -pthread
