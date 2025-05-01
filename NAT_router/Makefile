@@ -12,7 +12,7 @@ $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) $(SRC) -o $(TARGET)
 
 clean:
-	rm -f $(TARGET) *.o
+	rm -f $(TARGET)
 
 config:
 	/usr/sbin/iptables -I INPUT -i enp0s3 -p tcp --dport 49152:65535 -j DROP

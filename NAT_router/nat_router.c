@@ -36,6 +36,25 @@
 #include <sys/ioctl.h>
 
 
+#define NUM_WORKERS 4
+
+typedef struct job {
+    unsigned char *data;
+    ssize_t len;
+    struct job *next;
+} job_t;
+
+typedef struct job_queue {
+    job_t *head;
+    job_t *tail;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+} job_queue_t;
+
+static job_queue_t outbound_queue;
+static job_queue_t inbound_queue;
+
+
 volatile sig_atomic_t running = 1;
 interface_info int_if_info, ext_if_info;
 int outward_sock = -1;
@@ -382,6 +401,29 @@ void* packet_worker_func_outbound(void *arg) {
     return NULL;
 }
 
+void* outbound_worker(void *arg) {
+    while (running) {
+        pthread_mutex_lock(&outbound_queue.mutex);
+        while (!outbound_queue.head && running) {
+            pthread_cond_wait(&outbound_queue.cond, &outbound_queue.mutex);
+        }
+        if (!running) {
+            pthread_mutex_unlock(&outbound_queue.mutex);
+            break;
+        }
+        job_t *job = outbound_queue.head;
+        outbound_queue.head = job->next;
+        if (!outbound_queue.head) outbound_queue.tail = NULL;
+        pthread_mutex_unlock(&outbound_queue.mutex);
+
+        handle_outbound_packet(job->data, job->len);
+        free(job->data);
+        free(job);
+    }
+    return NULL;
+}
+
+
 void* thread_func_outbound(void *arg) {
     int raw_int = create_raw(int_if_info.name);
     struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
@@ -391,32 +433,26 @@ void* thread_func_outbound(void *arg) {
     while (running) {
         ssize_t n = recv(raw_int, buf, BUF_SZ, 0);
         if (n <= 0) continue;
+        // enqueue job instead of spawning thread
+        unsigned char *pkt_copy = malloc(n);
+        if (!pkt_copy) continue;
+        memcpy(pkt_copy, buf, n);
 
-        if (false) {
-            handle_outbound_packet(buf, n);
-        } else {
-            unsigned char *pkt_copy = malloc(n);
-            if (!pkt_copy) continue;
-            memcpy(pkt_copy, buf, n);
-
-            pthread_t worker;
-            pthread_attr_t attr;
-            pthread_attr_init(&attr);
-            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-
-            struct packet_data *p = malloc(sizeof(struct packet_data));
-            if (!p) {
-                free(pkt_copy);
-                continue;
-            }
-            p->data = pkt_copy;
-            p->len = n;
-            if (pthread_create(&worker, &attr, packet_worker_func_outbound, p) != 0) {
-                free(pkt_copy);
-                free(p);
-            }
-            pthread_attr_destroy(&attr);
+        job_t *job = malloc(sizeof(job_t));
+        if (!job) {
+            free(pkt_copy);
+            continue;
         }
+        job->data = pkt_copy;
+        job->len = n;
+        job->next = NULL;
+
+        pthread_mutex_lock(&outbound_queue.mutex);
+        if (outbound_queue.tail) outbound_queue.tail->next = job;
+        else outbound_queue.head = job;
+        outbound_queue.tail = job;
+        pthread_cond_signal(&outbound_queue.cond);
+        pthread_mutex_unlock(&outbound_queue.mutex);
     }
     
     close(raw_int);
@@ -430,7 +466,7 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
         return;
     struct ip *ip = (struct ip *)(buf + sizeof(*eth));
     if (checksum(ip, ip->ip_hl * 4) != 0) return;
-    if (is_public_address(ntohl(ip->ip_src.s_addr)) == 0) return;
+    // if (is_public_address(ntohl(ip->ip_src.s_addr)) == 0) return;
     if (ip->ip_dst.s_addr != ext_if_info.ip_addr.s_addr) return;
     
     if (ip->ip_p == IPPROTO_TCP || ip->ip_p == IPPROTO_UDP) {} 
@@ -533,6 +569,29 @@ void handle_inbound_packet(unsigned char *buf, ssize_t n) {
     free(ip_copy);
 }
 
+void* inbound_worker(void *arg) {
+    while (running) {
+        pthread_mutex_lock(&inbound_queue.mutex);
+        while (!inbound_queue.head && running) {
+            pthread_cond_wait(&inbound_queue.cond, &inbound_queue.mutex);
+        }
+        if (!running) {
+            pthread_mutex_unlock(&inbound_queue.mutex);
+            break;
+        }
+        job_t *job = inbound_queue.head;
+        inbound_queue.head = job->next;
+        if (!inbound_queue.head) inbound_queue.tail = NULL;
+        pthread_mutex_unlock(&inbound_queue.mutex);
+
+        handle_inbound_packet(job->data, job->len);
+        free(job->data);
+        free(job);
+    }
+    return NULL;
+}
+
+
 void* packet_worker_func_inbound(void *arg) {
     struct packet_data *pkt = arg;
     handle_inbound_packet(pkt->data, pkt->len);
@@ -550,31 +609,26 @@ void* thread_func_inbound(void *arg) {
     while (running) {
         ssize_t n = recv(raw_ext, buf, BUF_SZ, 0);
         if (n <= 0) continue;
+        // enqueue job instead of spawning thread
+        unsigned char *pkt_copy = malloc(n);
+        if (!pkt_copy) continue;
+        memcpy(pkt_copy, buf, n);
 
-        if (false) {
-            handle_inbound_packet(buf, n);
-        } else {
-            unsigned char *pkt_copy = malloc(n);
-            if (!pkt_copy) continue;
-            memcpy(pkt_copy, buf, n);
-
-            pthread_t worker;
-            pthread_attr_t attr;
-            pthread_attr_init(&attr);
-            pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-            struct packet_data *p = malloc(sizeof(struct packet_data));
-            if (!p) {
-                free(pkt_copy);
-                continue;
-            }
-            p->data = pkt_copy;
-            p->len = n;
-            if (pthread_create(&worker, &attr, packet_worker_func_inbound, p) != 0) {
-                free(pkt_copy);
-                free(p);
-            }
-            pthread_attr_destroy(&attr);
+        job_t *job = malloc(sizeof(job_t));
+        if (!job) {
+            free(pkt_copy);
+            continue;
         }
+        job->data = pkt_copy;
+        job->len = n;
+        job->next = NULL;
+
+        pthread_mutex_lock(&inbound_queue.mutex);
+        if (inbound_queue.tail) inbound_queue.tail->next = job;
+        else inbound_queue.head = job;
+        inbound_queue.tail = job;
+        pthread_cond_signal(&inbound_queue.cond);
+        pthread_mutex_unlock(&inbound_queue.mutex);
     }
 
     close(raw_ext);
@@ -619,6 +673,24 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     filter_init();
+
+    // Initialize outbound queue and workers
+    outbound_queue.head = outbound_queue.tail = NULL;
+    pthread_mutex_init(&outbound_queue.mutex, NULL);
+    pthread_cond_init(&outbound_queue.cond, NULL);
+    for (int i = 0; i < NUM_WORKERS; ++i) {
+        pthread_t t;
+        pthread_create(&t, NULL, outbound_worker, NULL);
+    }
+
+    // Initialize inbound queue and workers
+    inbound_queue.head = inbound_queue.tail = NULL;
+    pthread_mutex_init(&inbound_queue.mutex, NULL);
+    pthread_cond_init(&inbound_queue.cond, NULL);
+    for (int i = 0; i < NUM_WORKERS; ++i) {
+        pthread_t t;
+        pthread_create(&t, NULL, inbound_worker, NULL);
+    }
 
     signal(SIGINT, cleanup);
     signal(SIGTERM, cleanup);
