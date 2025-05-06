@@ -8,6 +8,7 @@ allowed_networks.json
 credentials.json
 *.o
 nat_router
+nat_router_ebpf
 nat_router_multi
 nat_router_multi_ebpf
 nat_router_single
