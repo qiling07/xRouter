@@ -1,10 +1,9 @@
 .idea/
 .vscode/
 .DS_Store
-NAT_router/manager
-NAT_router/manager_client
-NAT_router/allowed_networks.json
-NAT_router/credentials.json
+manager_client
+allowed_networks.json
+credentials.json
 *.o
 nat_router
 nat_router_multi
