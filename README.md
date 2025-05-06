@@ -1,23 +1,25 @@
-## Basic Test Pipeline
-- Put the code in both the host and the server.
-- Run the DHCP server
+# xRouter
+## Key Features
+## Architecture Overview
+## Environment Setup
+## How to run
+- Build and run the DHCP server. Configure `dhcp/dhcp.conf` as needed.
   ```
   cd dhcp_server
   make
   ./dhcp_server
   ```
-- Run the NAT server
+- Build and run the NAT server. 
   ```
   cd NAT_router
   make
   make config
-  ./nat_router INTERFACE_INT INTERFACE_EXT
+  ./[nat_router|nat_router_ebpf] LAN_IF WAN_IF
   ```
-- Note: `make config` depends on `iptables`. Please make sure you install it.
-- Now we can test the features on the host. For example:
-  - `ping google.com`
-  - `nslookup youtube.com`
-  - `curl google.com`
-  - Feel free to use Firefox and browse any websites.
-  - On the server, you may use `./manager_client print` to inspect the NAT Table.
    
+## Performance
+```
+netperf -H 128.105.145.222 -t UDP_RR -l 10 -- -m 64 -M 64 -P 0 -o THROUGHPUT,P50_LATENCY,P99_LATENCY,STDDEV_LATENCY
+iperf -c 128.105.145.222 -P 30 | tail -n 2
+yt-dlp https://www.youtube.com/watch?v=3MBv6PIsCBg --cookies ~/cookies.txt
+```
