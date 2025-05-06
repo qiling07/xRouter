@@ -1,6 +1,7 @@
 .idea/
 .vscode/
 .DS_Store
+dhcp_server
 dhcp_manager
 nat_manager
 allowed_networks.json
