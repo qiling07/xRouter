@@ -33,6 +33,23 @@ struct {
     __uint(max_entries, 2);
 } ifindex_map SEC(".maps");
 
+// Config struct and map
+struct config_t {
+    __u32 lan_ip;
+    __u32 lan_mask;
+    __u32 lan_broadcast;
+    __u32 lan_mtu;
+    __u32 public_ip;
+    __u32 wan_mtu;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct config_t);
+} cfg_map SEC(".maps");
+
 
 // Checksum utilities
 __attribute__((__always_inline__))
@@ -95,7 +112,7 @@ int is_host_address(uint32_t ip, uint32_t gateway_ip, uint32_t mask, uint32_t br
     return 1;
 }
 
-// inbound: pkt arrives on eth0 → lookup on (dst_ip, dst_port) → SNAT → redirect to eth1
+// outbound: pkt arrives on LAN → lookup on (src_ip, src_port) → SNAT → redirect to WAN
 SEC("xdp")
 int xdp_nat_out(struct xdp_md *ctx)
 {
@@ -108,7 +125,11 @@ int xdp_nat_out(struct xdp_md *ctx)
     if (buf + 1 > (void*)data_end) return XDP_PASS;
 
     long n = data_end - (unsigned long)buf;
-    if (n > 1500) return XDP_PASS;  // hardcoded
+    // Look up config map
+    __u32 idx = 0;
+    struct config_t *cfg = bpf_map_lookup_elem(&cfg_map, &idx);
+    if (!cfg) return XDP_PASS;
+    if ((__u32)n > cfg->wan_mtu) return XDP_PASS;
 
     // filter out IP packets
     struct ethhdr *eth = (struct ethhdr *)buf;
@@ -121,8 +142,7 @@ int xdp_nat_out(struct xdp_md *ctx)
     // if (ip_tot_len <= 20) return XDP_PASS;
     // if ((void*)ip + ip_tot_len > (void*)data_end) return XDP_PASS;
     if (ip->ihl * 4 != 20) return XDP_PASS;
-    if (is_host_address(bpf_ntohl(ip->saddr), 0x0a0a0103, 0xffffff00, 0x0a0a01ff) == 0) return XDP_PASS;        // hardcoded
-        
+    if (!is_host_address(bpf_ntohl(ip->saddr), cfg->lan_ip, cfg->lan_mask, cfg->lan_broadcast)) return XDP_PASS;
     if (ip->protocol == IPPROTO_TCP) {
         struct tcphdr *tcp = (struct tcphdr *)((char*)ip + sizeof(*ip));
         if ((void*)tcp + sizeof(*tcp) > (void*)data_end) {
@@ -262,19 +282,22 @@ int xdp_nat_out(struct xdp_md *ctx)
     }
 }
 
-// inbound: pkt arrives on eth0 → lookup on (dst_port) → DNAT → redirect to eth1
+// inbound: pkt arrives on WAN → lookup on (dst_port) → DNAT → redirect to LAN
 SEC("xdp")
 int xdp_nat_in(struct xdp_md *ctx)
 {
     unsigned int data_start = ctx->data;
     unsigned int data_end = ctx->data_end;
     if (data_start >= data_end) return XDP_PASS;
-	if (data_end - data_start > 1500) return XDP_PASS;						// hardcoded
+    __u32 idx = 0;
+    struct config_t *cfg = bpf_map_lookup_elem(&cfg_map, &idx);
+    if (!cfg) return XDP_PASS;
+    if ((data_end - data_start) > cfg->lan_mtu) return XDP_PASS;
 
     void *buf = (void *)data_start;
     if (buf + 1 > (void*)data_end) return XDP_PASS;
 
-	// filter out IP packets
+    // filter out IP packets
     struct ethhdr *eth = (struct ethhdr *)buf;
     if ((void*)eth + sizeof(*eth) > (void*)data_end) return XDP_PASS;
     if (bpf_ntohs(eth->h_proto) != ETH_P_IP) return XDP_PASS;
@@ -285,9 +308,7 @@ int xdp_nat_in(struct xdp_md *ctx)
     // if (ip_tot_len <= 20) return XDP_PASS;
     // if ((void*)ip + ip_tot_len > (void*)data_end) return XDP_PASS;
     if (ip->ihl * 4 != 20) return XDP_PASS;
-    if (bpf_ntohl(ip->daddr) != 0x806991cf) return XDP_PASS;                // hardcoded 128.105.145.207
-    
-        
+    if (bpf_ntohl(ip->daddr) != cfg->public_ip) return XDP_PASS;
     if (ip->protocol == IPPROTO_TCP) {
         struct tcphdr *tcp = (struct tcphdr *)((char*)ip + sizeof(*ip));
         if ((void*)tcp + sizeof(*tcp) > (void*)data_end) return XDP_PASS;

@@ -850,6 +850,37 @@ int main(int argc, char *argv[]) {
     if (!link_out) { perror("attach out"); exit(1); }
     link_in  = bpf_program__attach_xdp(p_in,  if_ext);
     if (!link_in)  { perror("attach in");  exit(1); }
+
+    // Populate config map
+    {
+        // Find cfg_map file descriptor
+        int cfg_map_fd = bpf_object__find_map_fd_by_name(bpf_obj, "cfg_map");
+        if (cfg_map_fd < 0) {
+            fprintf(stderr, "Error finding cfg_map fd\n");
+            exit(EXIT_FAILURE);
+        }
+        // Prepare config based on interface info
+        struct config_t {
+            __u32 lan_ip;
+            __u32 lan_mask;
+            __u32 lan_broadcast;
+            __u32 lan_mtu;
+            __u32 public_ip;
+            __u32 wan_mtu;
+        } cfg = {
+            .lan_ip = ntohl(int_if_info.ip_addr.s_addr),
+            .lan_mask = ntohl(int_if_info.netmask.s_addr),
+            .lan_broadcast = ntohl(int_if_info.broadcast.s_addr),
+            .lan_mtu = int_if_info.mtu,
+            .public_ip = ntohl(ext_if_info.ip_addr.s_addr),
+            .wan_mtu = ext_if_info.mtu
+        };
+        __u32 key = 0;
+        if (bpf_map_update_elem(cfg_map_fd, &key, &cfg, BPF_ANY) != 0) {
+            perror("bpf_map_update_elem cfg_map");
+            exit(EXIT_FAILURE);
+        }
+    }
 #endif
 
     if (pthread_create(&admin_thread, NULL, admin_thread_func, NULL) != 0) {
