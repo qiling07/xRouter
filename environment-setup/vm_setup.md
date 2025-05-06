@@ -228,10 +228,7 @@ mount -t 9p -o trans=virtio hostshare /mnt/hostshare
 ln -s /mnt/hostshare /root/xrouter
 ```
 
-Start running the DHCP server and the NAT router:
-```bash
-TODO
-```
+Run the DHCP server and the NAT router, as instructed in the main `README.md` at project root.
 
 
 ### Start host-1
