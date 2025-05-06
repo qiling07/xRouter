@@ -87,23 +87,56 @@ int set_hwaddr(const char *ifname, struct dhcp_conf *conf) {
     return 0;
 }
 
-void parse_dhcp_conf(struct dhcp_conf *conf){
-    // TODO: read parameters from the configuration file or pass parameters via command-line flags
-    conf->ip_addr = strdup("192.168.20.1");
-    conf->isp_interface = strdup("eth0");
-    conf->lan_interface = strdup("eth1");
-    set_hwaddr(conf->isp_interface, conf);
-    conf->gateway = strdup("192.168.20.1");
-    conf->netmask = strdup("255.255.255.0");
-    conf->broadcast = strdup("192.168.20.255");
-    conf->dns_ip = strdup("8.8.8.8");
-    conf->domain_name = strdup("router.vm");
-    conf->start_ip = strdup("192.168.20.101");
-    conf->end_ip = strdup("192.168.20.200");
-    conf->pool_size = 100;
-    conf->lease_time = 60; // 600
-    conf->renew_time = 30; // 300
-    conf->rebinding_time = 50; // 525
+void parse_dhcp_conf(struct dhcp_conf *conf) {
+    FILE *fp = fopen(CONF_FILE_PATH, "r");
+    if (!fp) {
+        perror("fopen " CONF_FILE_PATH);
+        exit(EXIT_FAILURE);
+    }
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        char key[64], val[128];
+        if (sscanf(line, " %63s %127s", key, val) != 2) {
+            continue;
+        }
+        if (strcmp(key, "ISP_interface") == 0) {
+            conf->isp_interface = strdup(val);
+        } else if (strcmp(key, "LAN_interface") == 0) {
+            conf->lan_interface = strdup(val);
+        } else if (strcmp(key, "gateway") == 0) {
+            conf->gateway = strdup(val);
+        } else if (strcmp(key, "netmask") == 0) {
+            conf->netmask = strdup(val);
+        } else if (strcmp(key, "broadcast") == 0) {
+            conf->broadcast = strdup(val);
+        } else if (strcmp(key, "dns_ip") == 0) {
+            conf->dns_ip = strdup(val);
+        } else if (strcmp(key, "domain_name") == 0) {
+            conf->domain_name = strdup(val);
+        } else if (strcmp(key, "start_ip") == 0) {
+            conf->start_ip = strdup(val);
+        } else if (strcmp(key, "end_ip") == 0) {
+            conf->end_ip = strdup(val);
+        } else if (strcmp(key, "pool_size") == 0) {
+            conf->pool_size = (uint32_t)atoi(val);
+        } else if (strcmp(key, "lease_time") == 0) {
+            conf->lease_time = (uint32_t)atoi(val);
+        } else if (strcmp(key, "renew_time") == 0) {
+            conf->renew_time = (uint32_t)atoi(val);
+        } else if (strcmp(key, "rebinding_time") == 0) {
+            conf->rebinding_time = (uint32_t)atoi(val);
+        }
+    }
+    fclose(fp);
+
+    /* Derive the server IP from gateway */
+    conf->ip_addr = strdup(conf->gateway);
+
+    /* Retrieve hardware (MAC) address of ISP interface */
+    if (set_hwaddr(conf->isp_interface, conf) != 0) {
+        fprintf(stderr, "Failed to get MAC for %s\n", conf->isp_interface);
+        exit(EXIT_FAILURE);
+    }
 }
 
 #endif
