@@ -12,7 +12,8 @@ from pathlib import Path
 
 CRED_FILE        = Path(__file__).parent / "credentials.json"
 ALLOWED_FILE     = Path(__file__).parent / "allowed_networks.json"
-MANAGER_CLIENT   = Path(__file__).parent / "manager_client"
+MANAGER_CLIENT   = Path(__file__).parent / "nat_manager"
+DHCP_MANAGER     = Path(__file__).parent / "dhcp_manager"
 LISTEN_PORT      = 8888
 
 # ——— Persistence for allowed networks ———
@@ -113,6 +114,8 @@ def handle_client(conn, addr):
         if cmd == "help":
             conn.sendall(b"""\
 Commands:
+  set <MAC_address> <lease_time>      Set lease time for a specific MAC address
+  reserve <MAC_address> <IP_address>  Reserve IP_address for MAC_address
   print_nat
   reset_nat
   filter_add <domain> <ip>
@@ -121,7 +124,6 @@ Commands:
   forward <int_ip> <int_port> <ext_port>
   unforward <int_ip> <int_port> <ext_port>
   show_forwarding
-  latency <network/CIDR>
   portal_allow_net        <network/CIDR>
   portal_deny_net         <network/CIDR>
   show_portal_allowed_net
@@ -180,7 +182,22 @@ Commands:
             save_creds({"username": nu, "password": np})
             conn.sendall(b"Credentials updated.\n")
             continue
-
+        
+        if cmd.startswith("set ") or cmd.startswith("reserve "):
+            try:
+                proc = subprocess.run(
+                    [str(DHCP_MANAGER)] + cmd.split(),
+                    cwd=DHCP_MANAGER.parent,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=5.0
+                )
+                output = proc.stdout
+            except Exception as e:
+                output = f"Error running DHCP_MANAGER: {e}\n"
+            conn.sendall(output.encode())
+            
         # fallback to manager_client
         try:
             proc = subprocess.run(
@@ -193,7 +210,7 @@ Commands:
             )
             output = proc.stdout
         except Exception as e:
-            output = f"Error running manager_client: {e}\n"
+            output = f"Error running NAT_MANAGER: {e}\n"
         conn.sendall(output.encode())
 
     conn.close()
