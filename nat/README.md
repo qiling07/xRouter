@@ -12,7 +12,7 @@ This directory contains the user-space NAT router component of the xrouter proje
 - **libbpf** (for eBPF build)  
   ```bash
   sudo apt-get update
-  sudo apt-get install -y clang libbpf-dev pkg-config
+  sudo apt-get install -y clang libbpf-dev pkg-config gcc-multilib
   ```
 - **Root privileges** (required for raw sockets and XDP)
 
