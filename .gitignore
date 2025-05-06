@@ -12,6 +12,6 @@ nat_router_multi_ebpf
 nat_router_single
 nat_router_single_ebpf
 old_builds/
-lab2/tcp-basic-echo-server
-lab2/tcp-concur-echo-server
-lab2/tcp-echo-client
+tcp-basic-echo-server
+tcp-concur-echo-server
+tcp-echo-client
