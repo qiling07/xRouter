@@ -446,17 +446,6 @@ void handle_outbound_packet(unsigned char *buf, ssize_t n) {
     
     free(ip_copy);
 }
-struct packet_data {
-    unsigned char *data;
-    ssize_t len;
-};
-void* packet_worker_func_outbound(void *arg) {
-    struct packet_data *pkt = arg;
-    handle_outbound_packet(pkt->data, pkt->len);
-    free(pkt->data);
-    free(pkt);
-    return NULL;
-}
 
 void* outbound_worker(void *arg) {
     while (running) {
@@ -689,15 +678,6 @@ void* inbound_worker(void *arg) {
         free(job->data);
         free(job);
     }
-    return NULL;
-}
-
-
-void* packet_worker_func_inbound(void *arg) {
-    struct packet_data *pkt = arg;
-    handle_inbound_packet(pkt->data, pkt->len);
-    free(pkt->data);
-    free(pkt);
     return NULL;
 }
 

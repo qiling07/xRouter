@@ -102,50 +102,26 @@ int xdp_nat_out(struct xdp_md *ctx)
     // bpf_printk("xdp_nat_out: entered\n");
     unsigned int data_start = ctx->data;
     unsigned int data_end = ctx->data_end;
-    if (data_start >= data_end) {
-        // bpf_printk("xdp_nat_out: no data\n");
-        return XDP_PASS;
-    }
+    if (data_start >= data_end) return XDP_PASS;
 
     void *buf = (void *)data_start;
-    if (buf + 1 > (void*)data_end) {
-        // bpf_printk("xdp_nat_out: buf too small\n");
-        return XDP_PASS;
-    }
+    if (buf + 1 > (void*)data_end) return XDP_PASS;
 
     long n = data_end - (unsigned long)buf;
-    if (n > 1500) {
-        // bpf_printk("xdp_nat_out: packet too large\n");
-        return XDP_PASS;
-    }						// hardcoded
+    if (n > 1500) return XDP_PASS;  // hardcoded
 
     // filter out IP packets
     struct ethhdr *eth = (struct ethhdr *)buf;
-    if ((void*)eth + sizeof(*eth) > (void*)data_end) {
-        // bpf_printk("xdp_nat_out: incomplete ethhdr\n");
-        return XDP_PASS;
-    }
-    if (bpf_ntohs(eth->h_proto) != ETH_P_IP) {
-        // bpf_printk("xdp_nat_out: not IPv4 proto %x\n", eth->h_proto);
-        return XDP_PASS;
-    }
+    if ((void*)eth + sizeof(*eth) > (void*)data_end) return XDP_PASS;
+    if (bpf_ntohs(eth->h_proto) != ETH_P_IP) return XDP_PASS;
 
     struct iphdr *ip = (struct iphdr *)((uintptr_t)eth + sizeof(*eth));
-    if ((void*)ip + sizeof(*ip) > (void*)data_end) {
-        // bpf_printk("xdp_nat_out: incomplete iphdr\n");
-        return XDP_PASS;
-    }
+    if ((void*)ip + sizeof(*ip) > (void*)data_end) return XDP_PASS;
     // uint16_t ip_tot_len = bpf_ntohs(ip->tot_len);
     // if (ip_tot_len <= 20) return XDP_PASS;
     // if ((void*)ip + ip_tot_len > (void*)data_end) return XDP_PASS;
-    if (ip->ihl * 4 != 20) {
-        // bpf_printk("xdp_nat_out: unexpected IHL %d\n", ip->ihl);
-        return XDP_PASS;
-    }
-    if (is_host_address(bpf_ntohl(ip->saddr), 0x0a0a0103, 0xffffff00, 0x0a0a01ff) == 0) { 	// hardcoded
-        // bpf_printk("xdp_nat_out: not in subnet or is gateway/broadcast\n");
-        return XDP_PASS;
-    }
+    if (ip->ihl * 4 != 20) return XDP_PASS;
+    if (is_host_address(bpf_ntohl(ip->saddr), 0x0a0a0103, 0xffffff00, 0x0a0a01ff) == 0) return XDP_PASS;        // hardcoded
         
     if (ip->protocol == IPPROTO_TCP) {
         struct tcphdr *tcp = (struct tcphdr *)((char*)ip + sizeof(*ip));
@@ -163,7 +139,7 @@ int xdp_nat_out(struct xdp_md *ctx)
         int is_tcp_ack = tcp->ack;
         int is_tcp_rst = tcp->rst;
 
-        bpf_printk("xdp_nat_out: TCP packet for %x:%d ->\n", src_ip, src_port);
+        // bpf_printk("xdp_nat_out: TCP packet for %x:%d ->\n", src_ip, src_port);
 
         // let userspace nat handle tcp disconnetion
         if (is_tcp_fin || is_tcp_rst) return XDP_PASS;
@@ -174,13 +150,13 @@ int xdp_nat_out(struct xdp_md *ctx)
         key.proto = IPPROTO_TCP;
         struct nat_val *v = bpf_map_lookup_elem(&nat_map, &key);
         if (!v) {
-            bpf_printk("xdp_nat_out: map lookup miss \n");
+            // bpf_printk("xdp_nat_out: map lookup miss \n");
             return XDP_PASS;
         }
 
 
-        bpf_printk("xdp_nat_out: map lookup hit\n");
-        bpf_printk("%x:%d\n", v->ip, v->port);
+        // bpf_printk("xdp_nat_out: map lookup hit\n");
+        // bpf_printk("%x:%d\n", v->ip, v->port);
 
 
         __u64 now = bpf_ktime_get_ns() / 1000000000;
@@ -198,7 +174,7 @@ int xdp_nat_out(struct xdp_md *ctx)
         // ipv4_l4_csum((void *)tcp, ip_tot_len - 20, &cs, ip);
         // tcp->check = cs;
 
-        bpf_printk("xdp_nat_out: performing FIB lookup\n");
+        // bpf_printk("xdp_nat_out: performing FIB lookup\n");
         struct bpf_fib_lookup fib_params;
         __builtin_memset(&fib_params, 0, sizeof(fib_params));
         fib_params.family	= AF_INET;
@@ -210,23 +186,23 @@ int xdp_nat_out(struct xdp_md *ctx)
         fib_params.ifindex = ctx->ingress_ifindex;
         int rc = bpf_fib_lookup(ctx, &fib_params, sizeof(fib_params), 0);
         if (rc == BPF_FIB_LKUP_RET_SUCCESS) {
-            bpf_printk("xdp_nat_out: FIB lookup success\n");
-            bpf_printk("xdp_nat_out: FIB ifindex=%d\n", fib_params.ifindex);
-            bpf_printk("xdp_nat_out: FIB smac=%02x:%02x:%02x\n",
-                       fib_params.smac[0], fib_params.smac[1], fib_params.smac[2]);
-            bpf_printk("xdp_nat_out: FIB smac=%02x:%02x:%02x\n",
-                       fib_params.smac[3], fib_params.smac[4], fib_params.smac[5]);
-            bpf_printk("xdp_nat_out: FIB dmac=%02x:%02x:%02x\n",
-                       fib_params.dmac[0], fib_params.dmac[1], fib_params.dmac[2]);
-            bpf_printk("xdp_nat_out: FIB dmac=%02x:%02x:%02x\n",
-                       fib_params.dmac[3], fib_params.dmac[4], fib_params.dmac[5]);
+            // bpf_printk("xdp_nat_out: FIB lookup success\n");
+            // bpf_printk("xdp_nat_out: FIB ifindex=%d\n", fib_params.ifindex);
+            // bpf_printk("xdp_nat_out: FIB smac=%02x:%02x:%02x\n",
+            //            fib_params.smac[0], fib_params.smac[1], fib_params.smac[2]);
+            // bpf_printk("xdp_nat_out: FIB smac=%02x:%02x:%02x\n",
+            //            fib_params.smac[3], fib_params.smac[4], fib_params.smac[5]);
+            // bpf_printk("xdp_nat_out: FIB dmac=%02x:%02x:%02x\n",
+            //            fib_params.dmac[0], fib_params.dmac[1], fib_params.dmac[2]);
+            // bpf_printk("xdp_nat_out: FIB dmac=%02x:%02x:%02x\n",
+            //            fib_params.dmac[3], fib_params.dmac[4], fib_params.dmac[5]);
             // update Ethernet header
             __builtin_memcpy(eth->h_source, fib_params.smac, ETH_ALEN);
             __builtin_memcpy(eth->h_dest, fib_params.dmac, ETH_ALEN);
             return bpf_redirect(fib_params.ifindex, 0);
             // return bpf_redirect_map(&ifindex_map, fib_params.ifindex, 0);
         } else {
-            bpf_printk("xdp_nat_out: FIB lookup failed, rc=%d\n", rc);
+            // bpf_printk("xdp_nat_out: FIB lookup failed, rc=%d\n", rc);
             return XDP_PASS;
         }
     }
@@ -326,7 +302,7 @@ int xdp_nat_in(struct xdp_md *ctx)
         int is_tcp_rst = tcp->rst;
 
         // Print TCP packet info
-        bpf_printk("xdp_nat_in: TCP packet -> %x:%d\n", dst_ip, dst_port);
+        // bpf_printk("xdp_nat_in: TCP packet -> %x:%d\n", dst_ip, dst_port);
 
         // let userspace nat handle tcp disconnetion
         if (is_tcp_fin || is_tcp_rst) return XDP_PASS;
@@ -338,10 +314,10 @@ int xdp_nat_in(struct xdp_md *ctx)
         key.proto = IPPROTO_TCP;
         struct nat_val *v = bpf_map_lookup_elem(&nat_map, &key);
         if (!v) {
-            bpf_printk("xdp_nat_in: map lookup miss\n");
+            // bpf_printk("xdp_nat_in: map lookup miss\n");
             return XDP_PASS;
         }
-        bpf_printk("xdp_nat_in: map lookup hit\n");
+        // bpf_printk("xdp_nat_in: map lookup hit\n");
 
         __u64 now = bpf_ktime_get_ns() / 1000000000;
         v->last_used = now;
@@ -358,7 +334,7 @@ int xdp_nat_in(struct xdp_md *ctx)
         // ipv4_l4_csum((void *)tcp, ip_tot_len - 20, &cs, ip);
         // tcp->check = cs;
 
-        bpf_printk("xdp_nat_in: performing FIB lookup\n");
+        // bpf_printk("xdp_nat_in: performing FIB lookup\n");
         struct bpf_fib_lookup fib_params;
         __builtin_memset(&fib_params, 0, sizeof(fib_params));
         fib_params.family	= AF_INET;
@@ -372,23 +348,23 @@ int xdp_nat_in(struct xdp_md *ctx)
         fib_params.ifindex = ctx->ingress_ifindex;
         int rc = bpf_fib_lookup(ctx, &fib_params, sizeof(fib_params), 0);
         if (rc == BPF_FIB_LKUP_RET_SUCCESS) {
-            bpf_printk("xdp_nat_in: FIB lookup success\n");
-            bpf_printk("xdp_nat_in: FIB ifindex=%d\n", fib_params.ifindex);
-            bpf_printk("xdp_nat_in: FIB smac=%02x:%02x:%02x\n",
-                       fib_params.smac[0], fib_params.smac[1], fib_params.smac[2]);
-            bpf_printk("xdp_nat_in: FIB smac=%02x:%02x:%02x\n",
-                       fib_params.smac[3], fib_params.smac[4], fib_params.smac[5]);
-            bpf_printk("xdp_nat_in: FIB dmac=%02x:%02x:%02x\n",
-                       fib_params.dmac[0], fib_params.dmac[1], fib_params.dmac[2]);
-            bpf_printk("xdp_nat_in: FIB dmac=%02x:%02x:%02x\n",
-                       fib_params.dmac[3], fib_params.dmac[4], fib_params.dmac[5]);
+            // bpf_printk("xdp_nat_in: FIB lookup success\n");
+            // bpf_printk("xdp_nat_in: FIB ifindex=%d\n", fib_params.ifindex);
+            // bpf_printk("xdp_nat_in: FIB smac=%02x:%02x:%02x\n",
+            //            fib_params.smac[0], fib_params.smac[1], fib_params.smac[2]);
+            // bpf_printk("xdp_nat_in: FIB smac=%02x:%02x:%02x\n",
+            //            fib_params.smac[3], fib_params.smac[4], fib_params.smac[5]);
+            // bpf_printk("xdp_nat_in: FIB dmac=%02x:%02x:%02x\n",
+            //            fib_params.dmac[0], fib_params.dmac[1], fib_params.dmac[2]);
+            // bpf_printk("xdp_nat_in: FIB dmac=%02x:%02x:%02x\n",
+            //            fib_params.dmac[3], fib_params.dmac[4], fib_params.dmac[5]);
             // update Ethernet header
             __builtin_memcpy(eth->h_source, fib_params.smac, ETH_ALEN);
             __builtin_memcpy(eth->h_dest, fib_params.dmac, ETH_ALEN);
             return bpf_redirect(fib_params.ifindex, 0);
             // return bpf_redirect_map(&ifindex_map, fib_params.ifindex, 0);
         } else {
-            bpf_printk("xdp_nat_in: FIB lookup failed, rc=%d\n", rc);
+            // bpf_printk("xdp_nat_in: FIB lookup failed, rc=%d\n", rc);
             return XDP_PASS;
         }
     }
@@ -439,7 +415,7 @@ int xdp_nat_in(struct xdp_md *ctx)
             __builtin_memcpy(eth->h_dest, fib_params.dmac, ETH_ALEN);
             return bpf_redirect(fib_params.ifindex, 0);
         } else {
-            bpf_printk("xdp_nat_in: FIB lookup failed, rc=%d\n", rc);
+            // bpf_printk("xdp_nat_in: FIB lookup failed, rc=%d\n", rc);
             return XDP_PASS;
         }
     }

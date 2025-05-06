@@ -24,6 +24,8 @@ static unsigned short icmp_checksum(void *buf, int len) {
 }
 
 void latency_probe_all(const char *network_cidr, char *out, size_t out_sz) {
+    assert(0 && "Unimplemented");
+    
     char netstr[INET_ADDRSTRLEN];
     int prefix;
     if (sscanf(network_cidr, "%15[^/]/%d", netstr, &prefix) != 2 ||

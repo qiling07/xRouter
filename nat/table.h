@@ -29,9 +29,9 @@
 #define MAX_PORT 65535
 #define AVAILABLE_PORTS (MAX_PORT - MIN_PORT + 1)
 
-#define TCP_CLOSED_TTL 10                // 10 seconds
-#define TCP_INACTIVE_TTL 30                 // 10 minutes
-#define NAT_INACTIVE_TTL 10                     // 2 minutes
+#define TCP_CLOSED_TTL 240                    // 4 minutes
+#define TCP_INACTIVE_TTL 3600                 // 1 hour
+#define NAT_INACTIVE_TTL 600                  // 10 minutes
 #define NAT_TABLE_SIZE 1024
 
 /* ---------------- NAT table ---------------- */
