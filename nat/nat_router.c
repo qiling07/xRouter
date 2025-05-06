@@ -30,7 +30,7 @@
 #include "table.h"
 #include "debug_print.h"
 #include "utils.h"
-#include "filter/filter.h"
+#include "filter.h"
 #include "latency.h"
 #include <net/if.h>
 #include <sys/ioctl.h>

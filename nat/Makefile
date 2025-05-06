@@ -1,6 +1,6 @@
 # Compiler settings
 CC            := g++
-CFLAGS        := -fpermissive -pthread -Ifilter
+CFLAGS        := -fpermissive -pthread
 
 BPF_CLANG     := clang
 BPF_CFLAGS    := -O2 -g -target bpf
@@ -11,7 +11,7 @@ LIBBPF_LIBS   := $(shell pkg-config --libs libbpf)
 BPF_SRC       := nat_kern.c
 BPF_OBJ       := nat_kern.o
 
-USR_SRC       := nat_router.c table.c utils.c debug_print.c filter/filter.c latency.c
+USR_SRC       := nat_router.c table.c utils.c debug_print.c filter.c latency.c
 
 # Phony targets
 .PHONY: all clean
