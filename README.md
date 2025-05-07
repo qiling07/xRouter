@@ -3,7 +3,7 @@ xRouter implements a high-performance network router combining NAT and DHCP func
 
 Additional highlights include a secure, TCP-based management portal with credential protection and IP whitelisting, per-host/domain content filtering, and full support for PMTUD and IP fragmentation. Multithreading and eBPF acceleration provide a 3× throughput improvement and 50% latency reduction compared to the baseline. The system is validated across both virtual and bare-metal environments using tools like Netperf, iPerf, and real-world streaming benchmarks, demonstrating near-native performance even with NAT enabled.
 
-This project was developed as part of the Computer Networks course at Purdue University. Many thanks to my teammates -- Jiayi Liu, Zhengyuan Li, and Kai Cheng—for their valuable contributions and support :D
+This project was developed as part of the Computer Networks course at Purdue University. Many thanks to my teammates -- **Jiayi Liu, Zhengyuan Li, and Kai Cheng**—for their valuable contributions and support :D
 
 ## Key Features
 | Category              | Features       |
