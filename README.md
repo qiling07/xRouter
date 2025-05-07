@@ -14,16 +14,16 @@ Additional highlights include a secure, TCP-based management portal with credent
 ![overview](https://github.com/qiling07/xrouter/architecture.png)
 
 ## Environment Setup
-We've tested our router under different environment
+xRouter runs on Linux systems. The typical testing environment consists of one router and multiple hosts forming a local network, with the router’s external interface connected to the Internet. We provide two setup guides for testing this topology in controlled environments: one using virtual machines (VMs) and the other using CloudLab bare-metal servers. Refer to the [VM Setup Guide](https://github.com/qiling07/xrouter/blob/main/environment-setup/vm_setup.md) and [CloudLab Setup Guide](https://github.com/qiling07/xrouter/blob/main/environment-setup/cloudlab_setup.md) for detailed configuration instructions.
 
 ## How to run
-- Build and run the DHCP server. Configure `dhcp/dhcp.conf` as needed.
+- Build and run the DHCP server. Configure `dhcp/dhcp.conf` as needed. See [DHCP README](https://github.com/qiling07/xrouter/blob/main/dhcp/README.md) for more details.
   ```
   cd dhcp_server
   make
   ./dhcp_server
   ```
-- Build and run the NAT server. 
+- Build and run the NAT server. See [NAT README](https://github.com/qiling07/xrouter/blob/main/nat/README.md) for more details.
   ```
   cd NAT_router
   make
