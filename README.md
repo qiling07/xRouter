@@ -1,7 +1,9 @@
 # xRouter
-Our project implements a high-performance network router combining NAT and DHCP functionalities, designed to handle real-world traffic with efficiency and flexibility. The router performs standard NAPT operations with support for port forwarding and hairpinning, while the DHCP server supports IP leasing, reservations, and lease time configuration. The architecture includes both a fast eBPF/XDP kernel module for existing NAT sessions and a user-space module for complex cases, closely mirroring the software/hardware page table model in virtual memory systems.
+xRouter implements a high-performance network router combining NAT and DHCP functionalities, designed to handle real-world traffic with efficiency and flexibility. The router performs standard NAPT operations with support for port forwarding and hairpinning, while the DHCP server supports IP leasing, reservations, and lease time configuration. The architecture includes both a fast eBPF/XDP kernel module for existing NAT sessions and a user-space module for complex cases, closely mirroring the software/hardware page table model in virtual memory systems.
 
 Additional highlights include a secure, TCP-based management portal with credential protection and IP whitelisting, per-host/domain content filtering, and full support for PMTUD and IP fragmentation. Multithreading and eBPF acceleration provide a 3× throughput improvement and 50% latency reduction compared to the baseline. The system is validated across both virtual and bare-metal environments using tools like Netperf, iPerf, and real-world streaming benchmarks, demonstrating near-native performance even with NAT enabled.
+
+This project was developed as part of the Computer Networks course at Purdue University. Many thanks to my teammates -- Jiayi Liu, Zhengyuan Li, and Kai Cheng—for their valuable contributions and support :D
 
 ## Key Features
 | Category              | Features       |
@@ -65,3 +67,4 @@ All configurations reach similar TCP throughput (940 Mbps), limited by the physi
 When downloading large videos from Youtube, xRouter introduces no noticeable overhead in real-world streaming, **achieving throughput nearly identical to the native setup (480Mbps).**
 
 ## Known Issues
+- The `hw` NAT table used in `fast_nat` may suffer from race conditions, as there is currently no locking mechanism in place for concurrent reads and writes.
