@@ -11,7 +11,7 @@ Additional highlights include a secure, TCP-based management portal with credent
 | **Management Portal** | - Remote Login<br>- Secure Credentials<br>- IP Access Controll    |
 
 ## Architecture Overview
-![overview](https://github.com/qiling07/xrouter/architecture.png)
+![overview](https://github.com/qiling07/xrouter/blob/main/architecture.png)
 Our NAT router implements standard NAPT by tracking sessions initiated by internal hosts, creating NAT bindings, and performing address/port translation for both inbound and outbound traffic. It automatically terminates idle sessions: short timeouts for connectionless protocols (UDP, ICMP), and longer ones for TCP, with a 4-minute timeout after TCP closure. 
 
 xRouter has two components: fast_nat.c, an eBPF XDP module that handles fast-path translation for existing sessions using a “hardware” NAT table for minimal overhead; and slow_nat.c, a user-space module that handles complex cases like port forwarding, hairpinning, and ICMP error processing. It maintains a “software” NAT table and synchronizes updates to the fast path. This design mirrors the hardware/software page table split in virtual memory systems, where the fast path handles common lookups efficiently, and the slow path resolves misses and maintains consistency. To improve performance, nat slow.c uses a worker pool for parallel packet handling.
