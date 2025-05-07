@@ -12,6 +12,7 @@ Additional highlights include a secure, TCP-based management portal with credent
 
 ## Architecture Overview
 ![overview](https://github.com/qiling07/xrouter/blob/main/architecture.png)
+
 Our NAT router implements standard NAPT by tracking sessions initiated by internal hosts, creating NAT bindings, and performing address/port translation for both inbound and outbound traffic. It automatically terminates idle sessions: short timeouts for connectionless protocols (UDP, ICMP), and longer ones for TCP, with a 4-minute timeout after TCP closure. 
 
 xRouter has two components: fast_nat.c, an eBPF XDP module that handles fast-path translation for existing sessions using a “hardware” NAT table for minimal overhead; and slow_nat.c, a user-space module that handles complex cases like port forwarding, hairpinning, and ICMP error processing. It maintains a “software” NAT table and synchronizes updates to the fast path. This design mirrors the hardware/software page table split in virtual memory systems, where the fast path handles common lookups efficiently, and the slow path resolves misses and maintains consistency. To improve performance, nat slow.c uses a worker pool for parallel packet handling.
@@ -37,10 +38,30 @@ xRouter runs on Linux systems. The typical testing environment consists of one r
   ```
    
 ## Performance
+![overview](https://github.com/qiling07/xrouter/blob/main/benchmark.png)
+
+We evaluate router performance using two tools:
+- Netperf (UDP_RR): This test measures round-trip latency and throughput using fixed-size UDP packets. The command
 ```
 netperf -H 128.105.145.222 -t UDP_RR -l 10 -- -m 64 -M 64 -P 0 -o THROUGHPUT,P50_LATENCY,P99_LATENCY,STDDEV_LATENCY
-iperf -c 128.105.145.222 -P 30 | tail -n 2
-yt-dlp https://www.youtube.com/watch?v=3MBv6PIsCBg --cookies ~/cookies.txt
 ```
+sends 64-byte UDP request/response pairs for 10 seconds to the target host. It reports throughput and latency statistics (median, 99th percentile, and standard deviation), which reflect how efficiently the router handles individual packets.
+
+
+- iPerf (parallel TCP connections):
+```
+iperf -c 128.105.145.222 -P 30 | tail -n 2
+```
+initiates 30 concurrent TCP streams to stress test the router’s bandwidth capacity. The tail command extracts summary statistics, including total throughput. This simulates real-world high-volume TCP workloads.
+
+- yt-dlp (YouTube download): This measure real-world application performance by downloading a YouTube video and calculating average throughput.
+
+Our optimized NAT router achieves 3× higher throughput and reduces median latency (p50) by approximately 60% compared
+to the baseline. Its performance closely matches the native case, with nearly identical latency and slightly higher
+throughput. These gains arise because Netperf sends UDP packets serially, making per-packet delay critical. XDP processes packets early in the kernel, bypassing costly networking stack operations and significantly improving performance.
+
+All configurations reach similar TCP throughput (940 Mbps), limited by the physical link speed between servers. Nonetheless, our NAT router improves short-term latency (p1 and average) because XDP reduces kernel overhead for each packet. The higher p99 jitter is likely due to CPU contention or scheduling under heavy parallel load.
+
+When downloading large videos from Youtube, xRouter introduces no noticeable overhead in real-world streaming, achieving throughput nearly identical to the native setup (480Mbps).
 
 ## Known Issues
