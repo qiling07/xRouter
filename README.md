@@ -62,6 +62,6 @@ throughput. These gains arise because Netperf sends UDP packets serially, making
 
 All configurations reach similar TCP throughput (940 Mbps), limited by the physical link speed between servers. Nonetheless, our NAT router improves short-term latency (p1 and average) because XDP reduces kernel overhead for each packet. The higher p99 jitter is likely due to CPU contention or scheduling under heavy parallel load.
 
-When downloading large videos from Youtube, xRouter introduces no noticeable overhead in real-world streaming, achieving throughput nearly identical to the native setup (480Mbps).
+When downloading large videos from Youtube, xRouter introduces no noticeable overhead in real-world streaming, **achieving throughput nearly identical to the native setup (480Mbps).**
 
 ## Known Issues
