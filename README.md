@@ -1,13 +1,21 @@
 # xRouter
+Our project implements a high-performance network router combining NAT and DHCP functionalities, designed to handle real-world traffic with efficiency and flexibility. The router performs standard NAPT operations with support for port forwarding and hairpinning, while the DHCP server supports IP leasing, reservations, and lease time configuration. The architecture includes both a fast eBPF/XDP kernel module for existing NAT sessions and a user-space module for complex cases, closely mirroring the software/hardware page table model in virtual memory systems.
+
+Additional highlights include a secure, TCP-based management portal with credential protection and IP whitelisting, per-host/domain content filtering, and full support for PMTUD and IP fragmentation. Multithreading and eBPF acceleration provide a 3× throughput improvement and 50% latency reduction compared to the baseline. The system is validated across both virtual and bare-metal environments using tools like Netperf, iPerf, and real-world streaming benchmarks, demonstrating near-native performance even with NAT enabled.
+
 ## Key Features
-| Category              | Additional Features                                                                                                                                                                                                       | Source Code                                                                                                                         |
-|-----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------|
-| **Management Portal** | - Remote Login via TCP (`telnet`/`nc router 8888`)<br>- Secure Credentials (salted hash + `reset_credentials`)<br>- IP Access Controller (whitelist in `allowed_networks.json`)                                          | - `NAT_router/nat-portal.py`<br>- `NAT_router/manager_client.c`<br>- `dhcp-server/manager_client.c`                                   |
-| **DHCP**              | - Lease Time Setting (`set <MAC> <lease_time>`)<br>- IP Reservation / Static IP (`reserve <MAC> <IP>`)                                                                                                                   | - `dhcp-server/dhcp_server.c`<br>- `dhcp-server/addr_pool.c`                                                                          |
-| **NAT**               | - Content Control (per-host, per-domain filtering)<br>- PMTUD & IP Fragmentation support<br>- Port Forwarding & Hairpinning<br>- ICMP Error Message Handling<br>- Multithreading & eBPF/XDP optimizations                   | - `NAT_router/nat_router.c`<br>- `NAT_router/manager_client.c`<br>- `NAT_router/filter/filter.c`<br>- `NAT_router/nat_kern.c`       |
+| Category              | Additional Features       |
+|-----------------------|---------------------------|
+| **NAT**               | - PMTUD & IP Fragmentation support<br>- Port Forwarding & Hairpinning<br>- ICMP Error Message Handling<br>- Content Control<br>- Multithreading & **eBPF/XDP** optimizations               |
+| **DHCP**              | - Lease Time Setting <br>- IP Reservation / Static IP        |
+| **Management Portal** | - Remote Login<br>- Secure Credentials<br>- IP Access Controll    |
+
 ## Architecture Overview
 ![overview](https://github.com/qiling07/xrouter/architecture.png)
+
 ## Environment Setup
+We've tested our router under different environment
+
 ## How to run
 - Build and run the DHCP server. Configure `dhcp/dhcp.conf` as needed.
   ```
